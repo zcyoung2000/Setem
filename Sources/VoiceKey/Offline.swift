@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 
 /// 离线识别资源（仅 Apple 芯片）：引擎库来自本仓库 Release，模型来自字节 CDN，首次选用时下载
@@ -198,7 +199,10 @@ final class OfflineWorker: @unchecked Sendable {
     }
 
     private func stop() {
-        process?.terminate()
+        if let p = process {
+            kill(p.processIdentifier, SIGKILL)
+            p.waitUntilExit()
+        }
         process = nil
         input = nil
         output = nil
@@ -212,6 +216,7 @@ final class OfflineWorker: @unchecked Sendable {
 
 final class OfflineEngine: ASREngine {
     func run(audio: AsyncStream<[Int16]>, partial: @escaping (String) -> Void) async throws -> String {
+        let audio = withLeadingSilence(audio)
         guard OfflineAssets.installed else {
             await MainActor.run { OfflineAssets.shared.download() }
             throw ASRError("离线模型未就绪，请在设置中查看下载进度")

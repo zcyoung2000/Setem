@@ -33,6 +33,7 @@ final class QwenEngine: ASREngine {
     }
 
     func run(audio: AsyncStream<[Int16]>, partial: @escaping (String) -> Void) async throws -> String {
+        let audio = withLeadingSilence(audio)
         var (c, reused) = try await channel(fresh: false)
         do {
             try await c.ensureAttach()
@@ -42,10 +43,6 @@ final class QwenEngine: ASREngine {
             if client === c { client = nil }
             (c, _) = try await channel(fresh: true)
             try await c.ensureAttach()
-        }
-
-        if QwenOutput.current == .translate {
-            try await c.updateTranslation()
         }
 
         let transcript = Box(partial: partial)
@@ -88,8 +85,7 @@ final class QwenEngine: ASREngine {
                 try await c.sendAudio(Data(pcm.prefix(3840)))
             }
             try await c.complete()
-            let waitN = QwenOutput.current == .translate ? 16 : 8
-            for _ in 0..<waitN where transcript.waiting {
+            for _ in 0..<8 where transcript.waiting {
                 try await Task.sleep(for: .milliseconds(250))
             }
             c.reset()
@@ -108,7 +104,6 @@ final class QwenEngine: ASREngine {
         private var sessionId = ""
         private var roundId = ""
         private var attached = false
-        private var output = QwenOutput.current
         var alive: Bool { ws.alive }
 
         init(auth: QwenAuth, ws: QwenRawWS) {
@@ -122,9 +117,7 @@ final class QwenEngine: ASREngine {
         }
 
         func ensureAttach() async throws {
-            let output = QwenOutput.current
-            if attached, !sessionId.isEmpty, self.output == output { return }
-            self.output = output
+            if attached, !sessionId.isEmpty { return }
             try await ws.send(binary: QwenEngine.attach(auth: auth))
             let deadline = Date().addingTimeInterval(8)
             while Date() < deadline, sessionId.isEmpty {
@@ -141,26 +134,6 @@ final class QwenEngine: ASREngine {
             }
             guard !sessionId.isEmpty else { throw ASRError("千问 attach 没有 sessionId") }
             attached = true
-        }
-
-        func updateTranslation() async throws {
-            try await ws.send(binary: QwenEngine.transform(auth: auth, sessionId: sessionId, roundId: roundId))
-            let deadline = Date().addingTimeInterval(5)
-            while Date() < deadline {
-                guard let data = try await ws.receiveOrNil(timeout: 1) else { continue }
-                if ProcessInfo.processInfo.environment["QWEN_DEBUG"] != nil,
-                   let s = String(data: data, encoding: .utf8) {
-                    fputs("QWEN_TRANSFORM \(s.prefix(800))\n", stderr)
-                }
-                guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
-                if obj["route"] as? String == "/voice_assistant/channel/transform" {
-                    let d = obj["data"] as? [String: Any]
-                    if d?["accepted"] as? Bool == true { return }
-                    let reason = d?["reason"] as? String ?? obj["msg"] as? String ?? "rejected"
-                    throw ASRError("千问 transform 拒绝: \(reason)")
-                }
-            }
-            throw ASRError("千问 transform 无响应")
         }
 
         func sendAudio(_ pcm: Data) async throws {
@@ -183,16 +156,6 @@ final class QwenEngine: ASREngine {
             roundId = ""
         }
 
-        func sendText(_ text: String) async throws {
-            if ProcessInfo.processInfo.environment["QWEN_DEBUG"] != nil {
-                fputs("QWEN_TEXT_SEND \(text.prefix(80))\n", stderr)
-            }
-            try await ws.send(binary: QwenEngine.textSend(auth: auth, sessionId: sessionId, roundId: roundId, text: text))
-        }
-        func completeText() async throws {
-            try await ws.send(binary: QwenEngine.textComplete(auth: auth, sessionId: sessionId, roundId: roundId))
-        }
-
         func close() { ws.close() }
     }
 
@@ -210,11 +173,7 @@ final class QwenEngine: ASREngine {
     private static func nowMs() -> String { String(Int(Date().timeIntervalSince1970 * 1000)) }
     private static func attach(auth: QwenAuth) throws -> Data {
         let reqt = nowMs()
-        let output = QwenOutput.current
-        var header: [String: Any] = [
-            "clt-acs-reqt": reqt,
-            "ai_polish_mode": output == .asr ? "off" : "smart",
-        ]
+        let header: [String: Any] = ["clt-acs-reqt": reqt, "ai_polish_mode": "off"]
         let asr: [String: Any] = [
             "body": [
                 "bitDepth": "16", "channel": "mono", "format": "pcm",
@@ -234,7 +193,7 @@ final class QwenEngine: ASREngine {
             "endpoint_config": [:] as [String: Any],
             "from": "kkframenew_quark_asr",
             "scene": "voice_input_assistant",
-            "ai_polish_mode": output == .asr ? "off" : "smart",
+            "ai_polish_mode": "off",
         ]
         let asrJSON = String(data: try JSONSerialization.data(withJSONObject: asr), encoding: .utf8)!
         let pipeJSON = String(data: try JSONSerialization.data(withJSONObject: pipe), encoding: .utf8)!
@@ -244,36 +203,6 @@ final class QwenEngine: ASREngine {
             + QwenPB.kv(5, "asrConfig", asrJSON)
             + QwenPB.kv(5, "pipelineContext", pipeJSON)
             + QwenPB.kv(5, "trigger", "local_device")
-    }
-    private static func textSend(auth: QwenAuth, sessionId: String, roundId: String, text: String) -> Data {
-        let body = QwenPB.bytes(1, "text") + QwenPB.bytes(2, "plain") + QwenPB.bytes(3, Data(text.utf8))
-        return QwenPB.bytes(1, "/voice_assistant/channel/text/send")
-            + QwenPB.bytes(2, auth.chid)
-            + QwenPB.kv(3, "clt-acs-reqt", nowMs())
-            + QwenPB.kv(4, "roundId", roundId)
-            + QwenPB.kv(4, "sessionId", sessionId)
-            + QwenPB.kv(5, "target_language", "en")
-            + QwenPB.kv(5, "current_text", text)
-            + QwenPB.bytes(6, body)
-    }
-    private static func textComplete(auth: QwenAuth, sessionId: String, roundId: String) -> Data {
-        QwenPB.bytes(1, "/voice_assistant/channel/text/complete")
-            + QwenPB.bytes(2, auth.chid)
-            + QwenPB.kv(3, "clt-acs-reqt", nowMs())
-            + QwenPB.kv(4, "roundId", roundId)
-            + QwenPB.kv(4, "sessionId", sessionId)
-            + QwenPB.kv(5, "target_language", "en")
-    }
-    private static func transform(auth: QwenAuth, sessionId: String, roundId: String) -> Data {
-        var pkt = QwenPB.bytes(1, "/voice_assistant/channel/transform")
-        pkt += QwenPB.bytes(2, auth.chid)
-        pkt += QwenPB.kv(3, "clt-acs-reqt", nowMs())
-        pkt += QwenPB.kv(4, "roundId", roundId)
-        pkt += QwenPB.kv(4, "sessionId", sessionId)
-        pkt += QwenPB.kv(4, "target_sub_scene", "VOICE_INPUT_TRANSLATE")
-        pkt += QwenPB.kv(4, "target_language", "en")
-        pkt += QwenPB.kv(4, "source_language", "zh")
-        return pkt
     }
     private static func asrSend(auth: QwenAuth, sessionId: String, roundId: String, pcm: Data) -> Data {
         let audio = QwenPB.bytes(1, "audio") + QwenPB.bytes(2, "pcm") + QwenPB.bytes(3, pcm)
@@ -298,38 +227,11 @@ final class QwenEngine: ASREngine {
         private let lock = NSLock()
         private let partial: (String) -> Void
         private var asr = ""
-        private(set) var polish = ""
-        private var translate = ""
-        private let mode = QwenOutput.current
         init(partial: @escaping (String) -> Void) { self.partial = partial }
-        var result: String {
-            lock.withLock {
-                switch mode {
-                case .asr: asr
-                case .polish: polish.isEmpty ? asr : polish
-                case .translate: translate.isEmpty ? (polish.isEmpty ? asr : polish) : translate
-                }
-            }
-        }
-        var waiting: Bool {
-            lock.withLock {
-                switch mode {
-                case .asr: false
-                case .polish: polish.isEmpty
-                case .translate: translate.isEmpty
-                }
-            }
-        }
-        var asrText: String { lock.withLock { asr } }
-        var translateEmpty: Bool { lock.withLock { translate.isEmpty } }
+        var result: String { lock.withLock { asr } }
+        var waiting: Bool { result.isEmpty }
         func setASR(_ s: String) {
             lock.lock(); asr = s; let p = partial; lock.unlock(); p(s)
-        }
-        func setPolish(_ s: String) {
-            lock.lock(); polish = s; let p = partial; lock.unlock(); p(s)
-        }
-        func setTranslate(_ s: String) {
-            lock.lock(); translate = s; let p = partial; lock.unlock(); p(s)
         }
     }
 
@@ -342,19 +244,7 @@ final class QwenEngine: ASREngine {
             if let text = (d["content"] as? [String: Any])?["text"] as? String, !text.isEmpty {
                 t.setASR(text)
             }
-            if let messages = d["messages"] as? [[String: Any]] {
-                for m in messages {
-                    if let s = m["content"] as? String, !s.isEmpty { t.setPolish(s) }
-                }
-            }
-            for (k, v) in d {
-                if (k == "translatedText" || k == "translated_text"),
-                   let s = v as? String, !s.isEmpty {
-                    t.setTranslate(s)
-                } else {
-                    walk(v, into: t)
-                }
-            }
+            for v in d.values { walk(v, into: t) }
         } else if let a = any as? [Any] {
             for v in a { walk(v, into: t) }
         }

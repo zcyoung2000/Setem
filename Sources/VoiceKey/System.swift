@@ -483,6 +483,11 @@ final class PickHUD {
 
     func confirm() { confirm(model.selected) }
 
+    func selectedText() -> String {
+        guard model.items.indices.contains(model.selected) else { return "" }
+        return model.items[model.selected].text
+    }
+
     func hide() { panel.orderOut(nil) }
 
     private func confirm(_ i: Int) {
