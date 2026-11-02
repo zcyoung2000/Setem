@@ -47,6 +47,19 @@ cat > "$APP/Contents/Info.plist" <<EOF
 </dict>
 </plist>
 EOF
-IDENTITY="${SIGN_IDENTITY:-$(security find-identity -v -p codesigning | awk -F'"' '/Apple Development/{print $2; exit}')}"
-codesign --force --sign "${IDENTITY:--}" "$APP"
+SIGN_LOG=$(mktemp)
+if IDENTITY=$(./Scripts/ensure-signing-cert.sh 2>"$SIGN_LOG"); then
+    if ! codesign --force --sign "$IDENTITY" "$APP" 2>>"$SIGN_LOG"; then
+        cat "$SIGN_LOG" >&2
+        echo "固定证书签名失败，回退 ad-hoc 签名" >&2
+        codesign --force --sign - "$APP"
+        IDENTITY=""
+    fi
+else
+    cat "$SIGN_LOG" >&2
+    echo "固定证书不可用，回退 ad-hoc 签名" >&2
+    codesign --force --sign - "$APP"
+    IDENTITY=""
+fi
+rm -f "$SIGN_LOG"
 echo "built $APP (signed: ${IDENTITY:-adhoc})"

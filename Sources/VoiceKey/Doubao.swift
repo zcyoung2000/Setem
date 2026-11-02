@@ -3,24 +3,62 @@ import Foundation
 /// 豆包输入法流式识别：asr.AsrRequest protobuf over WSS，Opus 20ms 帧
 final class DoubaoEngine: ASREngine {
     private static let wsURL = "wss://frontier-audio-ime-ws.doubao.com/ocean/api/v1/ws"
-    private static let ua = "com.bytedance.android.doubaoime/100102018 (Linux; U; Android 16; en_US; Pixel 7 Pro; Build/BP2A.250605.031.A2; Cronet/TTNetVersion:94cf429a 2025-11-17 QuicVersion:1f89f732 2025-05-08)"
+    /// Official client 1.4.6's built-in ASR key; settings-discovered keys are rejected on some devices.
+    static let appKey = "OrnqKvSSrs"
     private static let ok = 20_000_000
     private static let first: UInt64 = 1, middle: UInt64 = 3, last: UInt64 = 9
 
     func run(audio: AsyncStream<[Int16]>, partial: @escaping (String) -> Void) async throws -> String {
+        // Keep the complete recording so a rejected device can be replayed once with a new identity.
+        var frames: [[Int16]] = []
+        let (live, source) = AsyncStream<[Int16]>.makeStream()
+        let keeper = Task {
+            for await frame in audio {
+                frames.append(frame)
+                source.yield(frame)
+            }
+            source.finish()
+        }
+        defer { keeper.cancel() }
+
+        do {
+            return try await Self.session(live, partial: partial)
+        } catch let rejection as SessionRejected {
+            DoubaoDevice.reset()
+            let replay = AsyncStream<[Int16]> { cont in
+                Task {
+                    for frame in frames { cont.yield(frame) }
+                    cont.finish()
+                }
+            }
+            do {
+                return try await Self.session(replay, partial: partial)
+            } catch {
+                DoubaoDevice.reset()
+                let first = error is SessionRejected
+                    ? rejection.message : error.localizedDescription
+                throw ASRError("\(first)；换设备重试：\(error.localizedDescription)")
+            }
+        }
+    }
+
+    private struct SessionRejected: Error { let message: String }
+
+    private static func session(_ audio: AsyncStream<[Int16]>, partial: @escaping (String) -> Void) async throws -> String {
+        let pacedAudio = withLeadingSilence(audio)
         let device = try await DoubaoDevice.load()
         let rid = UUID().uuidString.lowercased()
         var request = URLRequest(url: URL(string: "\(Self.wsURL)?aid=401734&device_id=\(device.did)")!)
-        request.setValue(Self.ua, forHTTPHeaderField: "User-Agent")
+        request.setValue(device.phone.ua, forHTTPHeaderField: "User-Agent")
         request.setValue("v2", forHTTPHeaderField: "proto-version")
         request.setValue("true", forHTTPHeaderField: "x-custom-keepalive")
         let ws = WebSocket(request: request)
         defer { ws.close() }
 
         do {
-            try await ws.send(Self.request(token: device.token, method: "StartTask", rid: rid))
+            try await ws.send(Self.request(token: Self.appKey, method: "StartTask", rid: rid))
             try await Self.expect(ws, "TaskStarted")
-            try await ws.send(Self.request(token: device.token, method: "StartSession",
+            try await ws.send(Self.request(token: Self.appKey, method: "StartSession",
                                            payload: Self.sessionConfig(did: device.did), rid: rid))
             try await Self.expect(ws, "SessionStarted")
         } catch let error as ASRError {
@@ -36,7 +74,7 @@ final class DoubaoEngine: ASREngine {
         let ts0 = Int(Date().timeIntervalSince1970 * 1000)
         var index = 0
         let meta = { (i: Int) in "{\"extra\":{},\"timestamp_ms\":\(ts0 + i * 20)}" }
-        for await frame in audio {
+        for await frame in pacedAudio {
             try Task.checkCancellation()
             try await ws.send(Self.request(method: "TaskRequest", payload: meta(index),
                                            audio: try encoder.encode(frame), rid: rid,
@@ -44,7 +82,7 @@ final class DoubaoEngine: ASREngine {
             index += 1
         }
         try await ws.send(Self.request(method: "TaskRequest", payload: meta(index), rid: rid, frame: Self.last))
-        try await ws.send(Self.request(token: device.token, method: "FinishSession", rid: rid))
+        try await ws.send(Self.request(token: Self.appKey, method: "FinishSession", rid: rid))
         let watchdog = Task {
             try await Task.sleep(for: .seconds(10 + Double(index) / 200))
             ws.close()
@@ -53,7 +91,11 @@ final class DoubaoEngine: ASREngine {
         do {
             try await receiver.value
         } catch {
-            if transcript.result.isEmpty { throw error }
+            if transcript.result.isEmpty {
+                let message = error.localizedDescription
+                if message.contains("Failed") { throw SessionRejected(message: message) }
+                throw error
+            }
         }
         return transcript.result
     }
@@ -107,7 +149,7 @@ final class DoubaoEngine: ASREngine {
             "enable_punctuation": true,
             "enable_speech_rejection": true,
             "extra": ["app_name": "oime", "cell_compress_rate": 8, "did": did,
-                      "enable_asr_threepass": true, "enable_asr_twopass": true, "input_mode": "stream"],
+                      "enable_asr_threepass": false, "enable_asr_twopass": true, "input_mode": "stream"],
         ]
         return String(decoding: try! JSONSerialization.data(withJSONObject: cfg), as: UTF8.self)
     }
@@ -125,13 +167,24 @@ final class DoubaoEngine: ASREngine {
         var result: String {
             lock.withLock {
                 let done = sentences.keys.sorted().compactMap { sentences[$0] }
-                return joinSentences(done.isEmpty ? [current] : done)
+                return joinSentences(done + [current])
             }
         }
 
         func update(_ json: String) {
             guard let obj = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
                   let results = obj["results"] as? [[String: Any]] else { return }
+            // New backend responses put the cumulative text in results[0] and omit index.
+            if !results.contains(where: { ($0["index"] as? Int) != nil }) {
+                guard let text = results.first?["text"] as? String, !text.isEmpty else { return }
+                let shown = lock.withLock {
+                    sentences.removeAll()
+                    current = text
+                    return text
+                }
+                partial(shown)
+                return
+            }
             let text: String = lock.withLock {
                 for r in results {
                     guard let t = r["text"] as? String, !t.isEmpty else { continue }
@@ -167,25 +220,77 @@ func joinSentences(_ parts: [String]) -> String {
     return out
 }
 
-/// 设备注册 + settings 拉取 asr app_key，本地缓存复用
+/// 设备注册，本地缓存复用
 struct DoubaoDevice: Codable {
     let did: String
     let token: String
+    let phone: Phone
+
+    init(did: String, token: String, phone: Phone) {
+        self.did = did
+        self.token = token
+        self.phone = phone
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        did = try c.decode(String.self, forKey: .did)
+        token = try c.decode(String.self, forKey: .token)
+        // Older Swift caches did not persist the generated device profile.
+        phone = try c.decodeIfPresent(Phone.self, forKey: .phone) ?? Phone.legacy
+    }
 
     private static let file = appSupportFile("doubao.json")
-    private static let ua = "com.bytedance.android.doubaoime/100102018 (Linux; U; Android 16; en_US; Pixel 7 Pro; Build/BP2A.250605.031.A2; Cronet/TTNetVersion:94cf429a 2025-11-17 QuicVersion:1f89f732 2025-05-08)"
     private static let app: [String: String] = [
         "aid": "401734", "app_name": "oime", "channel": "official",
-        "version_code": "100102018", "version_name": "1.1.2",
-        "manifest_version_code": "100102018", "update_version_code": "100102018",
+        "version_code": "100406010", "version_name": "1.4.6",
+        "manifest_version_code": "100406010", "update_version_code": "100406010",
         "package": "com.bytedance.android.doubaoime",
     ]
-    private static let dev: [String: String] = [
-        "device_platform": "android", "os": "android", "os_api": "34", "os_version": "16",
-        "device_type": "Pixel 7 Pro", "device_brand": "google", "device_model": "Pixel 7 Pro",
-        "resolution": "1080*2400", "dpi": "420", "language": "zh", "timezone": "8",
-        "access": "wifi", "rom": "UP1A.231005.007", "rom_version": "UP1A.231005.007",
-    ]
+
+    struct Phone: Codable {
+        let brand: String, model: String, os: String, api: String, build: String
+        let resolution: String, dpi: String
+
+        static let legacy = Phone(
+            brand: "google", model: "Pixel 7 Pro", os: "16", api: "36",
+            build: "BP2A.250605.031.A2", resolution: "1080*2340", dpi: "420"
+        )
+        static let profiles = [
+            Phone(brand: "google", model: "Pixel 7 Pro", os: "16", api: "36", build: "BP2A.250605.031.A2", resolution: "1080*2340", dpi: "420"),
+            Phone(brand: "google", model: "Pixel 8", os: "15", api: "35", build: "AP4A.250205.002", resolution: "1080*2400", dpi: "420"),
+            Phone(brand: "google", model: "Pixel 9", os: "15", api: "35", build: "AP4A.250205.002", resolution: "1080*2424", dpi: "420"),
+            Phone(brand: "google", model: "Pixel 6", os: "14", api: "34", build: "AP2A.240805.005", resolution: "1080*2400", dpi: "420"),
+            Phone(brand: "samsung", model: "SM-S9210", os: "14", api: "34", build: "UP1A.231005.007", resolution: "1080*2340", dpi: "480"),
+            Phone(brand: "samsung", model: "SM-S9280", os: "14", api: "34", build: "UP1A.231005.007", resolution: "1080*2340", dpi: "450"),
+            Phone(brand: "samsung", model: "SM-S9180", os: "14", api: "34", build: "UP1A.231005.007", resolution: "1080*2316", dpi: "450"),
+            Phone(brand: "Xiaomi", model: "23127PN0CC", os: "14", api: "34", build: "UKQ1.230804.001", resolution: "1200*2670", dpi: "440"),
+            Phone(brand: "Xiaomi", model: "2211133C", os: "14", api: "34", build: "UKQ1.230804.001", resolution: "1080*2400", dpi: "440"),
+            Phone(brand: "Xiaomi", model: "24129PN74C", os: "15", api: "35", build: "AQ3A.240912.001", resolution: "1200*2670", dpi: "440"),
+            Phone(brand: "Redmi", model: "23090RA98C", os: "14", api: "34", build: "UKQ1.231003.002", resolution: "1220*2712", dpi: "440"),
+            Phone(brand: "Redmi", model: "23113RKC6C", os: "14", api: "34", build: "UKQ1.231003.002", resolution: "1440*3200", dpi: "560"),
+            Phone(brand: "vivo", model: "V2309A", os: "14", api: "34", build: "UP1A.231005.007", resolution: "1260*2800", dpi: "480"),
+            Phone(brand: "vivo", model: "V2324A", os: "14", api: "34", build: "UP1A.231005.007", resolution: "1260*2800", dpi: "480"),
+            Phone(brand: "OPPO", model: "PHZ110", os: "14", api: "34", build: "UKQ1.231108.001", resolution: "1264*2780", dpi: "480"),
+            Phone(brand: "OnePlus", model: "PJD110", os: "14", api: "34", build: "UKQ1.230924.001", resolution: "1440*3168", dpi: "560"),
+            Phone(brand: "OnePlus", model: "PJE110", os: "14", api: "34", build: "UKQ1.230924.001", resolution: "1264*2780", dpi: "480"),
+        ]
+        static func random() -> Phone { profiles.randomElement()! }
+
+        var ua: String {
+            "com.bytedance.android.doubaoime/100406010 (Linux; U; Android \(os); en_US; \(model); Build/\(build); Cronet/TTNetVersion:94cf429a 2025-11-17 QuicVersion:1f89f732 2025-05-08)"
+        }
+
+        var params: [String: String] {
+            app.merging([
+                "device_platform": "android", "os": "android", "os_api": api,
+                "os_version": os, "device_type": model, "device_brand": brand,
+                "device_model": model, "resolution": resolution, "dpi": dpi,
+                "language": "zh", "timezone": "8", "access": "wifi",
+                "rom": build, "rom_version": build,
+            ]) { _, new in new }
+        }
+    }
 
     static func load() async throws -> DoubaoDevice {
         if let data = try? Data(contentsOf: file), let d = try? JSONDecoder().decode(DoubaoDevice.self, from: data) {
@@ -198,8 +303,8 @@ struct DoubaoDevice: Codable {
 
     static func reset() { try? FileManager.default.removeItem(at: file) }
 
-    private static func post(_ base: String, query: [String: String], body: Data, contentType: String,
-                             extra: [String: String] = [:]) async throws -> [String: Any] {
+    private static func post(_ base: String, ua: String, query: [String: String],
+                             body: Data, contentType: String) async throws -> [String: Any] {
         var comps = URLComponents(string: base)!
         comps.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) }
         var req = URLRequest(url: comps.url!, timeoutInterval: 10)
@@ -207,19 +312,20 @@ struct DoubaoDevice: Codable {
         req.httpBody = body
         req.setValue(ua, forHTTPHeaderField: "User-Agent")
         req.setValue(contentType, forHTTPHeaderField: "Content-Type")
-        for (k, v) in extra { req.setValue(v, forHTTPHeaderField: k) }
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw ASRError("豆包设备注册 HTTP 失败") }
         return (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
     }
 
     private static func register() async throws -> DoubaoDevice {
+        let phone = Phone.random()
         let cdid = UUID().uuidString.lowercased()
         let now = String(Int(Date().timeIntervalSince1970 * 1000))
-        var header: [String: Any] = dev.merging(app) { a, _ in a }
+        let params = phone.params
+        var header: [String: Any] = params.mapValues { $0 as Any }
         header.merge([
             "device_id": 0, "install_id": 0, "cdid": cdid,
-            "openudid": String(format: "%08x", UInt32.random(in: 0...UInt32.max)),
+            "openudid": String(format: "%016x", UInt64.random(in: 0...UInt64.max)),
             "clientudid": UUID().uuidString.lowercased(),
             "region": "CN", "tz_name": "Asia/Shanghai", "tz_offset": 28800,
             "sim_region": "cn", "carrier_region": "cn", "cpu_abi": "arm64-v8a", "build_serial": "unknown",
@@ -228,20 +334,12 @@ struct DoubaoDevice: Codable {
         let body = try JSONSerialization.data(withJSONObject: [
             "magic_tag": "ss_app_log", "header": header, "_gen_time": Int(now)!,
         ] as [String: Any])
-        let reg = try await post("https://log.snssdk.com/service/2/device_register/",
-                                 query: dev.merging(app) { a, _ in a }.merging(["ssmix": "a", "_rticket": now, "cdid": cdid, "ac": "wifi"]) { _, b in b },
-                                 body: body, contentType: "application/json")
+        let query = params.merging(["ssmix": "a", "_rticket": now, "cdid": cdid, "ac": "wifi"]) { _, new in new }
+        let reg = try await post("https://log-klink.zijieapi.com/service/2/device_register/",
+                                 ua: phone.ua, query: query, body: body, contentType: "application/json")
         let did = (reg["device_id_str"] as? String) ?? (reg["device_id"] as? NSNumber)?.stringValue ?? ""
         guard !did.isEmpty, did != "0" else { throw ASRError("豆包设备注册被拒绝") }
 
-        let settings = try await post("https://is.snssdk.com/service/settings/v3/",
-                                      query: app.merging(["device_platform": "android", "os": "android", "ssmix": "a",
-                                                          "_rticket": now, "cdid": cdid, "device_id": did]) { _, b in b },
-                                      body: Data("body=null".utf8), contentType: "application/x-www-form-urlencoded",
-                                      extra: ["x-ss-stub": "46c03b52742b3f2615a3abdf1636b754"])
-        let token = ((((settings["data"] as? [String: Any])?["settings"] as? [String: Any])?["asr_config"]
-            as? [String: Any])?["app_key"] as? String) ?? ""
-        guard !token.isEmpty else { throw ASRError("豆包 settings 未返回 app_key") }
-        return DoubaoDevice(did: did, token: token)
+        return DoubaoDevice(did: did, token: DoubaoEngine.appKey, phone: phone)
     }
 }

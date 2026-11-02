@@ -23,6 +23,7 @@ final class WeTypeEngine: ASREngine {
     }
 
     func run(audio: AsyncStream<[Int16]>, partial: @escaping (String) -> Void) async throws -> String {
+        let audio = withLeadingSilence(audio)
         var (c, reused) = try await channel(fresh: false)
         let encoder = try Opus(application: Opus.audio, bitrate: 64000, complexity: 9)
         let voiceId = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()

@@ -25,24 +25,6 @@ enum Channel: String, CaseIterable, Identifiable {
     }
 }
 
-enum QwenOutput: String, CaseIterable, Identifiable {
-    case asr, polish, translate
-    var id: String { rawValue }
-    var title: String {
-        switch self {
-        case .asr: "原文"
-        case .polish: "润色"
-        case .translate: "译成英文"
-        }
-    }
-    static var current: QwenOutput {
-        let raw = ProcessInfo.processInfo.environment["QWEN_OUTPUT"]
-            ?? UserDefaults.standard.string(forKey: "qwenOutput")
-            ?? ""
-        return QwenOutput(rawValue: raw) ?? .polish
-    }
-}
-
 enum Hotkey: String, CaseIterable, Identifiable {
     case rightOption, rightCommand, rightControl, fn
     var id: String { rawValue }
@@ -211,7 +193,6 @@ struct SettingsView: View {
     @AppStorage("silence") private var silence = 1.5
     @AppStorage("streaming") private var streaming = true
     @AppStorage("micUID") private var micUID = ""
-    @AppStorage("qwenOutput") private var qwenOutput = QwenOutput.polish.rawValue
     @State private var microphones = Microphone.all()
     @ObservedObject private var offline = OfflineAssets.shared
     @State private var axTrusted = AXIsProcessTrusted()
@@ -236,11 +217,6 @@ struct SettingsView: View {
                 .labelsHidden()
                 .onChange(of: channel) { if $1 == Channel.offline.rawValue { offline.download() } }
                 if channel == Channel.offline.rawValue { OfflineStatus(offline: offline) }
-                if channel == Channel.qwen.rawValue || channel == Channel.all.rawValue {
-                    Picker("千问输出", selection: $qwenOutput) {
-                        ForEach(QwenOutput.allCases) { Text($0.title).tag($0.rawValue) }
-                    }
-                }
                 Picker("长按快捷键", selection: $hotkey) {
                     ForEach(Hotkey.allCases) { Text($0.title).tag($0.rawValue) }
                 }

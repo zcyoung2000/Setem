@@ -26,6 +26,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var caretAnchor: NSRect?
     private var previousApp: NSRunningApplication?
     private var pickLatest: [String: (text: String, status: String)] = [:]
+    /// 本句已经显示过的中间结果；超时或失败时留下，不清空
+    private var livePartial = ""
+    private var streamingNow = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -124,7 +127,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         lastVoice = Date()
         setIcon(recording: true)
         hud.show("", listening: true)
-        let typer: StreamTyper? = (UserDefaults.standard.object(forKey: "streaming") as? Bool ?? true) ? StreamTyper() : nil
+        streamingNow = UserDefaults.standard.object(forKey: "streaming") as? Bool ?? true
+        livePartial = ""
+        let typer: StreamTyper? = streamingNow ? StreamTyper() : nil
         aborting = false
         sessionGen += 1
         let gen = sessionGen
@@ -133,6 +138,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             do {
                 let text = try await engine.run(audio: audio) { partial in
                     DispatchQueue.main.async {
+                        guard self.sessionGen == gen else { return }
+                        self.livePartial = partial
                         if let typer { typer.update(partial) } else { self.hud.update(partial) }
                     }
                 }
@@ -144,23 +151,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     if !text.isEmpty { typer.update(text) }
                     typer.finish()
                     self.hud.hide()
-                } else if text.isEmpty {
-                    self.hud.show("没有识别到内容", listening: false)
-                    self.hud.hide(after: 1)
-                } else {
+                } else if !text.isEmpty {
                     self.hud.hide()
                     TextInserter.insert(text)
+                } else if !self.livePartial.isEmpty {
+                    self.hud.hide()
+                    TextInserter.insert(self.livePartial)
+                } else {
+                    self.hud.show("没有识别到内容", listening: false)
+                    self.hud.hide(after: 1)
                 }
+                self.livePartial = ""
             } catch is CancellationError {
                 typer?.finish()
                 self.stopRecording()
                 self.recognizeTimeout?.cancel()
                 if !self.aborting { self.hud.hide() }
             } catch {
+                let kept = self.livePartial
+                self.livePartial = ""
                 typer?.finish()
                 self.stopRecording()
                 self.recognizeTimeout?.cancel()
-                self.fail("识别失败：\(error.localizedDescription)")
+                if typer == nil, !kept.isEmpty { TextInserter.insert(kept) }
+                let tail = kept.isEmpty ? "" : "，已保留已识别的文字"
+                self.fail("识别失败：\(error.localizedDescription)\(tail)")
             }
             if self.sessionGen == gen {
                 self.aborting = false
@@ -184,6 +199,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setIcon(recording: true)
         hud.show("", listening: true)
         caretAnchor = Caret.bounds()
+        streamingNow = false
+        livePartial = ""
         previousApp = NSWorkspace.shared.frontmostApplication
         aborting = false
         sessionGen += 1
@@ -298,6 +315,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 打断「识别中」：点按/再按快捷键/Esc，或 15 秒超时。message 为 nil 表示用户取消。
     private func abort(_ message: String?) {
         guard session != nil else { return }
+        let kept = livePartial
+        let stream = streamingNow
+        let picked = picking ? pick.selectedText() : ""
+        let app = previousApp
+        previousApp = nil
+        livePartial = ""
         aborting = true
         sessionGen += 1
         recognizeTimeout?.cancel()
@@ -307,7 +330,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         picking = false
         pick.hide()
         if let message {
-            fail(message)
+            if !stream, !kept.isEmpty {
+                TextInserter.insert(kept)
+            } else if !picked.isEmpty {
+                app?.activate()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { TextInserter.insert(picked) }
+            }
+            let keptAny = !kept.isEmpty || !picked.isEmpty
+            fail(keptAny ? "\(message)，已保留已识别的文字" : message)
         } else {
             hud.hide()
         }

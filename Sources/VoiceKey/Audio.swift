@@ -191,3 +191,37 @@ func fileFrames(_ url: URL, realtime: Bool) throws -> AsyncStream<[Int16]> {
         }
     }
 }
+
+/// Pad 200ms of silence before live speech, then emit at most one frame per 20ms.
+/// The source stream continues buffering while an engine completes its handshake,
+/// so the first spoken frames are not discarded.
+func withLeadingSilence(_ audio: AsyncStream<[Int16]>) -> AsyncStream<[Int16]> {
+    AsyncStream { cont in
+        let task = Task {
+            var next = Date()
+            func emit(_ frame: [Int16]) async -> Bool {
+                let delay = next.timeIntervalSinceNow
+                if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
+                else { next = Date() }
+                cont.yield(frame)
+                next = next.addingTimeInterval(0.02)
+                return !Task.isCancelled
+            }
+
+            for _ in 0..<10 {
+                guard await emit([Int16](repeating: 0, count: FrameConverter.frame)) else {
+                    cont.finish()
+                    return
+                }
+            }
+            for await frame in audio {
+                guard await emit(frame) else {
+                    cont.finish()
+                    return
+                }
+            }
+            cont.finish()
+        }
+        cont.onTermination = { _ in task.cancel() }
+    }
+}
