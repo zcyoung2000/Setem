@@ -40,3 +40,7 @@
 
 - 修复 SwiftPM 在包最低平台为 macOS 15 时把 Mach-O `LC_BUILD_VERSION.sdk` 也记成 15.0 的问题；构建时显式记录当前 Xcode SDK 版本，保留最低系统 macOS 15。文件：`build.sh`。
 - 设置窗保留标准标题栏与 grouped Form，避免 full-size Liquid Glass 嵌入红绿灯和点击时整窗抖动；打开设置时显式激活 accessory app 并置前窗口。录音 HUD 与多渠道候选浮层在 macOS 26+ 切换为 Liquid Glass，旧系统回退 `regularMaterial`。文件：`Sources/VoiceKey/AppDelegate.swift`、`Settings.swift`、`System.swift`。
+
+## 后续维护
+
+- 离线模型不再在选用离线渠道或触发识别时自动下载；设置页和菜单栏都会先询问用户。设置页支持查看状态、手动下载、失败重试以及删除本地约 185MB 离线资源；删除后若当前渠道为离线，则自动切回豆包。文件：`Sources/VoiceKey/Offline.swift`、`Settings.swift`、`AppDelegate.swift`、`main.swift`。

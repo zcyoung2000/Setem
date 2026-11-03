@@ -21,7 +21,6 @@ if let i = args.firstIndex(of: "--test"), i + 2 < args.count {
     let typer = args.contains("--type") ? StreamTyper() : nil
     Task {
         do {
-            if engine is OfflineEngine, !OfflineAssets.installed { try await OfflineAssets.shared.install() }
             let start = Date()
             let text = try await engine.run(audio: try fileFrames(url, realtime: true)) { partial in
                 print("…", partial)
