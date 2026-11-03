@@ -65,6 +65,20 @@ enum Hotkey: String, CaseIterable, Identifiable {
     }
 }
 
+enum HUDStyle: String, CaseIterable, Identifiable {
+    case compact, standard
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .compact: "紧凑"
+        case .standard: "标准（原来大）"
+        }
+    }
+    static var current: HUDStyle {
+        HUDStyle(rawValue: UserDefaults.standard.string(forKey: "hudStyle") ?? "") ?? .compact
+    }
+}
+
 private struct HotkeyMenuItem: View {
     let hotkey: Hotkey
 
@@ -210,6 +224,7 @@ struct SettingsView: View {
     @AppStorage("hotkey") private var hotkey = Hotkey.rightOption.rawValue
     @AppStorage("tapShortcut") private var tapShortcut = Shortcut.defaultRaw
     @AppStorage("silence") private var silence = 1.5
+    @AppStorage("hudStyle") private var hudStyle = HUDStyle.compact.rawValue
     @AppStorage("streaming") private var streaming = true
     @AppStorage("micUID") private var micUID = ""
     @State private var microphones = Microphone.all()
@@ -261,6 +276,11 @@ struct SettingsView: View {
                 if tapShortcut != "off" {
                     Picker("静音自动结束", selection: $silence) {
                         ForEach([1.0, 1.5, 2.0, 3.0, 5.0], id: \.self) { Text("\($0, specifier: "%g") 秒").tag($0) }
+                    }
+                }
+                Picker("提示框样式", selection: $hudStyle) {
+                    ForEach(HUDStyle.allCases) { style in
+                        Text(style.title).tag(style.rawValue)
                     }
                 }
                 Toggle("边说边上屏", isOn: $streaming)

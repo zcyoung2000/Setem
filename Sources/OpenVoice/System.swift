@@ -197,6 +197,8 @@ final class HUDModel: ObservableObject {
 
 /// 多层正弦叠加，振幅随音量变化，两端收敛
 private struct VoiceWave: View {
+    var width: CGFloat = 72
+    var height: CGFloat = 18
     var level: CGFloat
     var idle = false
     private let layers: [(freq: CGFloat, speed: CGFloat, scale: CGFloat, opacity: Double)] = [
@@ -208,8 +210,8 @@ private struct VoiceWave: View {
             let t = CGFloat(context.date.timeIntervalSinceReferenceDate)
             Canvas { ctx, size in
                 let mid = size.height / 2
-                let live = 0.06 + level * 0.94
-                let idleAmp = 0.16 + 0.10 * (sin(t * 2.1) * 0.5 + 0.5)
+                let live = 0.08 + level * 0.92
+                let idleAmp = 0.20 + 0.10 * (sin(t * 2.1) * 0.5 + 0.5)
                 let amp = (idle ? idleAmp : live) * (mid - 1)
                 let speed: CGFloat = idle ? 0.42 : 1
                 for layer in layers {
@@ -224,30 +226,29 @@ private struct VoiceWave: View {
                     ctx.stroke(path, with: .linearGradient(
                         Gradient(colors: [.cyan, .blue, .purple, .pink]),
                         startPoint: .zero, endPoint: CGPoint(x: size.width, y: 0)),
-                        style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                        style: StrokeStyle(lineWidth: height > 24 ? 2.0 : 1.8, lineCap: .round))
                 }
             }
         }
-        .frame(width: 140, height: 34)
+        .frame(width: width, height: height)
     }
 }
 
 private struct HUDView: View {
     @ObservedObject var model: HUDModel
+    @AppStorage("hudStyle") private var hudStyle = HUDStyle.compact.rawValue
+
+    var isCompact: Bool { hudStyle != HUDStyle.standard.rawValue }
 
     var body: some View {
-        HStack(spacing: 10) {
-            VoiceWave(level: model.listening ? model.level : 0, idle: !model.listening)
-            if !model.text.isEmpty, model.text != "识别中…" {
-                Text(model.text)
-                    .lineLimit(3)
-                    .truncationMode(.head)
-                    .frame(maxWidth: 480, alignment: .leading)
-            }
-        }
-        .font(.system(size: 14))
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
+        VoiceWave(
+            width: isCompact ? 72 : 140,
+            height: isCompact ? 18 : 34,
+            level: model.listening ? model.level : 0,
+            idle: !model.listening
+        )
+        .padding(.horizontal, isCompact ? 11 : 16)
+        .padding(.vertical, isCompact ? 5 : 8)
         .liquidGlassBackground(in: Capsule())
         .fixedSize()
     }
@@ -260,12 +261,57 @@ private struct LiquidGlassBackground<ShapeType: Shape>: ViewModifier {
 
     func body(content: Content) -> some View {
         if #available(macOS 26.0, *) {
-            content.glassEffect(
-                interactive ? Glass.regular.interactive() : .regular,
-                in: shape
-            )
+            content
+                .glassEffect(
+                    interactive ? Glass.regular.interactive() : .regular,
+                    in: shape
+                )
+                .overlay {
+                    // 玻璃穹顶微漫反射光泽（顶部微反光）
+                    shape.fill(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(0.20),
+                                Color.white.opacity(0.04),
+                                Color.clear
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                    .allowsHitTesting(false)
+                }
+                .overlay {
+                    // 玻璃折射倒角与边缘高光（Specular Rim Highlight）
+                    shape.stroke(
+                        LinearGradient(
+                            stops: [
+                                .init(color: Color.white.opacity(0.70), location: 0.0),
+                                .init(color: Color.white.opacity(0.25), location: 0.35),
+                                .init(color: Color.white.opacity(0.08), location: 0.70),
+                                .init(color: Color.white.opacity(0.22), location: 1.0)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 0.8
+                    )
+                    .allowsHitTesting(false)
+                }
         } else {
-            content.background(.regularMaterial, in: shape)
+            content
+                .background(.regularMaterial, in: shape)
+                .overlay {
+                    shape.stroke(
+                        LinearGradient(
+                            colors: [Color.white.opacity(0.55), Color.white.opacity(0.12)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 0.8
+                    )
+                    .allowsHitTesting(false)
+                }
         }
     }
 }
@@ -294,6 +340,10 @@ final class HUD {
         panel.ignoresMouseEvents = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.contentView = NSHostingView(rootView: HUDView(model: model))
+        NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            guard let self, self.panel.isVisible else { return }
+            self.layout()
+        }
     }
 
     func show(_ text: String, listening: Bool) {
