@@ -17,13 +17,13 @@ fi
 if [[ ! -f "$KEYCHAIN" ]]; then
     KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
     security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >&2
+    security set-keychain-settings -lut 21600 "$KEYCHAIN" >&2
     printf '%s' "$KEYCHAIN_PASSWORD" >"$KEYCHAIN.password"
     chmod 600 "$KEYCHAIN.password"
 else
     KEYCHAIN_PASSWORD="$(<"$KEYCHAIN.password")"
 fi
 
-security set-keychain-settings -lut 21600 "$KEYCHAIN" >&2
 security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >&2
 if ! security find-certificate -c "$NAME" "$KEYCHAIN" >/dev/null 2>&1; then
     security import "$STORE/voicekey.p12" -P "$(<"$STORE/voicekey.p12.password")" \

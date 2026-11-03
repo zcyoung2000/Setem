@@ -14,7 +14,7 @@
 8. **微信协议**：已核对，`WeType.swift` 的注册、ECDH、AES、snappy、protobuf、语音请求协议均未改动；仅接入通用 leading-silence 音频层。文件：`Sources/VoiceKey/WeType.swift`。
 9. **豆包离线**：已核对模型/引擎库 URL、大小、SHA-256/MD5 校验、下载移动方式、worker 子进程启动、100ms 喂入、空闲 5 分钟释放均与 main 一致；仅将 worker 停止从 SIGTERM 后不等退出改为 SIGKILL 后 `waitUntilExit()`，与上游 kill+wait 等价，避免残留僵尸进程。上游：`c2a262c`。文件：`Sources/VoiceKey/Offline.swift`。
 10. **识别超时保留文字**：记录当前中间结果；非流式模式超时/失败时插入已有文字，流式模式保留已上屏内容；全部渠道对比模式超时时保留当前选中的候选。上游：`abb0ea8`。文件：`Sources/VoiceKey/AppDelegate.swift`、`Sources/VoiceKey/System.swift`。
-11. **保留开头语音**：新增 `withLeadingSilence`，四个引擎统一先发送 200ms 静音给服务端 VAD 起音，再按 20ms 释放握手期间缓存的原始帧，不丢弃字头。上游：`18e8be7`。文件：`Sources/VoiceKey/Audio.swift`、`Doubao.swift`、`Qwen.swift`、`WeType.swift`、`Offline.swift`。
+11. **保留开头语音**：新增 `withLeadingSilence`，豆包/千问/微信先发送 200ms 静音给服务端 VAD 起音，再按 20ms 释放握手期间缓存的原始帧；离线引擎与 main 一致不垫静音，依赖 AsyncStream 在 worker begin 阶段缓存原始帧，均不丢弃字头。上游：`18e8be7`。文件：`Sources/VoiceKey/Audio.swift`、`Doubao.swift`、`Qwen.swift`、`WeType.swift`、`Offline.swift`。
 12. **录音结束释放麦克风**：已核对，无差异。Swift `Recorder.stop()` 先 `AudioQueueStop`，同步收尾帧流并置空 continuation，再 `AudioQueueDispose`，当前实现已正确释放 AudioQueue/麦克风。上游：`6011a19`、`b0b301a` / PR #7。文件：`Sources/VoiceKey/Audio.swift`。
 13. **蓝牙麦克风就绪后刷新列表**：已核对，无差异。Swift 设置页每秒调用 `Microphone.all()` 重新读取 CoreAudio 设备与输入通道；蓝牙设备从 0 通道变为可用后会自动出现，无需重连或重开页面。上游：`7077f25`。文件：`Sources/VoiceKey/Settings.swift`、`Audio.swift`。
 14. **固定自签名签名**：新增本地固定证书生成脚本与专用 keychain 导入脚本；首次构建自动生成 `build/signing/voicekey.p12`（密码在同目录 `.password` 文件，均被 git ignore），后续构建复用同一证书。构建时优先 `SIGN_IDENTITY`，固定证书生成/导入/签名失败则回退 ad-hoc 并输出原因。上游证书思路：`11baced`（`main:Scripts/gen-cert.sh`）。文件：`build.sh`、`Scripts/gen-cert.sh`、`Scripts/ensure-signing-cert.sh`。
@@ -29,3 +29,9 @@
 
 - 固定证书位于 `build/signing/`；重新编译可复用。若删除该目录，会生成新的自签名证书，macOS 授权可能需要重新确认，因此请按需备份。
 - 专用签名 keychain 只在用户钥匙串搜索列表中挂载，证书本身不提交到 git。
+
+## 复查修复
+
+- 千问按 main 语义以 `newRoundId` 标记 ASR 定稿，不再在首个 partial 后提前返回；同时为复用 Session 的会话状态加锁，避免收发任务并发读写。
+- 豆包重放留底加锁；二次失败错误始终保留首次 `SessionFailed` 原因；握手任意失败均清除设备缓存。
+- 离线引擎移除额外的 200ms 前导静音，与 main 输入一致。
