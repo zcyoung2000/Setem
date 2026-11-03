@@ -84,3 +84,7 @@ git tag v0.2.0 && git push origin v0.2.0
 ## 声明
 
 本项目通过分析输入法客户端协议实现，仅供学习与个人使用，与字节跳动、腾讯无关。接口可能随时变更或失效；语音会发送到对应厂商的服务器。
+
+## 致谢
+
+本项目基于 [VoiceKey](https://github.com/J3n5en/voicekey) fork 而来，感谢原作者 [J3n5en](https://github.com/J3n5en) 的出色工作。
