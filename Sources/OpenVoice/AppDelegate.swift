@@ -29,6 +29,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 本句已经显示过的中间结果；超时或失败时留下，不清空
     private var livePartial = ""
     private var streamingNow = false
+    /// 长按并发送模式：成功定稿后补一个 Return；「全部」渠道自动采用第一个非空定稿
+    private var sendOnFinish = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         migrateLegacyState()
@@ -66,15 +68,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             default: break
             }
         }
-        hotkey.onLongPress = { [weak self] in self?.begin() }
-        hotkey.onRelease = { [weak self] in
+        hotkey.onLongPress = { [weak self] send in self?.begin(sendOnFinish: send) }
+        hotkey.onRelease = { [weak self] _ in
             if self?.autoStop == false { self?.end() }
         }
         hotkey.onTap = { [weak self] in
             guard let self else { return }
             if self.recording { self.end() }
             else if self.session != nil { self.abort(nil) }
-            else { self.begin(autoStop: true) }
+            else { self.begin(autoStop: true, sendOnFinish: false) }
         }
         hotkey.onEscape = { [weak self] in
             guard let self, self.session != nil else { return }
@@ -102,10 +104,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return false
     }
 
-    private func begin(autoStop: Bool = false) {
+    private func begin(autoStop: Bool = false, sendOnFinish: Bool = false) {
         guard session == nil else { return }
         if Channel.current == .all {
-            beginPick(autoStop: autoStop)
+            beginPick(autoStop: autoStop, sendOnFinish: sendOnFinish)
             return
         }
         let engine: ASREngine = switch Channel.current {
@@ -124,6 +126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         recording = true
         self.autoStop = autoStop
+        self.sendOnFinish = sendOnFinish
         heardVoice = false
         lastVoice = Date()
         setIcon(recording: true)
@@ -134,6 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         aborting = false
         sessionGen += 1
         let gen = sessionGen
+        let sendAfterCompletion = sendOnFinish
         session = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
@@ -152,12 +156,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     if !text.isEmpty { typer.update(text) }
                     typer.finish()
                     self.hud.hide()
+                    if sendAfterCompletion { TextInserter.pressReturn(after: 0.08) }
                 } else if !text.isEmpty {
                     self.hud.hide()
-                    TextInserter.insert(text)
+                    TextInserter.insert(text, sendsReturn: sendAfterCompletion)
                 } else if !self.livePartial.isEmpty {
                     self.hud.hide()
-                    TextInserter.insert(self.livePartial)
+                    TextInserter.insert(self.livePartial, sendsReturn: sendAfterCompletion)
                 } else {
                     self.hud.show("没有识别到内容", listening: false)
                     self.hud.hide(after: 1)
@@ -180,12 +185,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             if self.sessionGen == gen {
                 self.aborting = false
+                self.sendOnFinish = false
                 self.session = nil
             }
         }
     }
 
-    private func beginPick(autoStop: Bool) {
+    private func beginPick(autoStop: Bool, sendOnFinish: Bool) {
         let audio: AsyncStream<[Int16]>
         do {
             audio = try recorder.start()
@@ -195,6 +201,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         recording = true
         self.autoStop = autoStop
+        self.sendOnFinish = sendOnFinish
         heardVoice = false
         lastVoice = Date()
         setIcon(recording: true)
@@ -215,7 +222,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         let active = items.filter { $0.status == "识别中" }.map(\.channel)
         let streams = ChannelCompare.fanout(audio, n: active.count)
-        pick.onChoose = { [weak self] text in self?.finishPick(text) }
+        pick.onChoose = { [weak self] text in self?.finishPick(text, sendsReturn: false) }
         pick.onCancel = { [weak self] in self?.abort(nil) }
         session = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -224,6 +231,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     let stream = streams[i]
                     g.addTask { @MainActor in await self.recognizePick(ch, stream, gen) }
                 }
+            }
+            guard self.sessionGen == gen else { return }
+            if self.sendOnFinish {
+                self.recognizeTimeout?.cancel()
+                self.hud.show("没有识别到内容", listening: false)
+                self.hud.hide(after: 1)
+                self.aborting = false
+                self.sendOnFinish = false
+                self.session = nil
             }
         }
     }
@@ -258,9 +274,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let status { cur.status = status }
         pickLatest[ch.rawValue] = cur
         if picking { pick.update(ch, text: text, status: status) }
+        if sendOnFinish, status == "完成", let finalText = text, !finalText.isEmpty {
+            finishPick(finalText, sendsReturn: true)
+        }
     }
 
-    private func finishPick(_ text: String) {
+    private func finishPick(_ text: String, sendsReturn: Bool) {
         aborting = true
         sessionGen += 1
         recognizeTimeout?.cancel()
@@ -272,9 +291,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         stopRecording()
         let app = previousApp
         previousApp = nil
+        sendOnFinish = false
         app?.activate()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-            TextInserter.insert(text)
+            TextInserter.insert(text, sendsReturn: sendsReturn)
         }
     }
 
@@ -293,17 +313,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard recording else { return }
         stopRecording()
         if Channel.current == .all {
-            hud.hide()
-            picking = true
-            pick.show(Channel.engines.map { ch in
-                if let latest = pickLatest[ch.rawValue] {
-                    return PickItem(channel: ch, text: latest.text, status: latest.status)
-                }
-                if ch == .offline, !OfflineAssets.installed {
-                    return PickItem(channel: ch, status: "跳过（未下载）")
-                }
-                return PickItem(channel: ch, status: "识别中")
-            }, anchor: caretAnchor)
+            if sendOnFinish {
+                hud.show("识别中…", listening: false)
+                let work = DispatchWorkItem { [weak self] in self?.abort("识别超时") }
+                recognizeTimeout?.cancel()
+                recognizeTimeout = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: work)
+            } else {
+                hud.hide()
+                picking = true
+                pick.show(Channel.engines.map { ch in
+                    if let latest = pickLatest[ch.rawValue] {
+                        return PickItem(channel: ch, text: latest.text, status: latest.status)
+                    }
+                    if ch == .offline, !OfflineAssets.installed {
+                        return PickItem(channel: ch, status: "跳过（未下载）")
+                    }
+                    return PickItem(channel: ch, status: "识别中")
+                }, anchor: caretAnchor)
+            }
             return
         }
         hud.show("识别中…", listening: false)
@@ -329,6 +357,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         session = nil
         stopRecording()
         picking = false
+        sendOnFinish = false
         pick.hide()
         if let message {
             if !stream, !kept.isEmpty {
@@ -382,6 +411,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let header = NSMenuItem(title: "长按 \(Hotkey.current.title) 说话", action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
+        if let sendHold = Shortcut.sendHold {
+            let sendHeader = NSMenuItem(title: "长按 \(sendHold.title) 说话并发送", action: nil, keyEquivalent: "")
+            sendHeader.isEnabled = false
+            menu.addItem(sendHeader)
+        }
         menu.addItem(.separator())
         for c in Channel.available {
             let item = NSMenuItem(title: c.title, action: #selector(selectChannel(_:)), keyEquivalent: "")

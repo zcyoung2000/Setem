@@ -1,11 +1,11 @@
 import AppKit
 import SwiftUI
 
-/// 长按键：按住超过阈值开始、松开结束。点按快捷键：单个修饰键在阈值内松开，或 组合键按下（吞掉不传给前台 App）
+/// 长按键：按住超过阈值开始、松开结束；发送模式会携带到定稿处理。点按快捷键：单个修饰键在阈值内松开，或组合键按下（吞掉不传给前台 App）
 final class HotkeyMonitor {
     var onPress: () -> Void = {}
-    var onLongPress: () -> Void = {}
-    var onRelease: () -> Void = {}
+    var onLongPress: (Bool) -> Void = { _ in }
+    var onRelease: (Bool) -> Void = { _ in }
     var onTap: () -> Void = {}
     var onEscape: () -> Void = {}
     /// 挑选浮层打开时吞掉方向键/回车/Esc；返回 true 表示已处理
@@ -13,12 +13,15 @@ final class HotkeyMonitor {
     /// 设置里录制快捷键时暂停
     static var paused = false
     private static let threshold: TimeInterval = 0.3
+    private enum HoldKind { case regular, send }
     private var tap: CFMachPort?
     private var downCode: Int64?
     private var swallowedCode: Int64?
+    private var sendSwallowedCode: Int64?
     private var pressedAt = Date.distantPast
     private var cancelled = false
     private var active = false
+    private var holdKind: HoldKind?
     private var timer: Timer?
 
     /// 无权限时创建会失败，定时重试直到用户授权
@@ -64,10 +67,19 @@ final class HotkeyMonitor {
         }
         guard !Self.paused else { return false }
         let shortcut = Shortcut.tap
+        let sendHold = Shortcut.sendHold
         switch type {
         case .keyDown:
             if code == 53, event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
                 onEscape()
+            }
+            if let s = sendHold, !s.isModifier, code == s.keyCode,
+               event.flags.intersection(Shortcut.mask).rawValue == s.modifiers {
+                if event.getIntegerValueField(.keyboardEventAutorepeat) == 0, sendSwallowedCode == nil {
+                    sendSwallowedCode = code
+                    beginPendingHold(.send)
+                }
+                return true
             }
             if let s = shortcut, !s.isModifier, code == s.keyCode,
                event.flags.intersection(Shortcut.mask).rawValue == s.modifiers {
@@ -77,14 +89,30 @@ final class HotkeyMonitor {
             }
             if downCode != nil, !active { cancelPending() }
         case .keyUp:
+            if code == sendSwallowedCode {
+                sendSwallowedCode = nil
+                if active, holdKind == .send {
+                    active = false
+                    holdKind = nil
+                    onRelease(true)
+                } else {
+                    cancelPending()
+                }
+                return true
+            }
             if code == swallowedCode {
                 swallowedCode = nil
                 return true
             }
         case .flagsChanged:
+            if sendSwallowedCode != nil, !active, let s = sendHold,
+               event.flags.intersection(Shortcut.mask).rawValue != s.modifiers {
+                cancelPending()
+            }
             let hold = Hotkey.current
+            let sendCode = sendHold.flatMap { $0.isModifier ? $0.keyCode : nil }
             let tapCode = shortcut.flatMap { $0.isModifier ? $0.keyCode : nil }
-            guard code == downCode ?? code, code == hold.keyCode || code == tapCode,
+            guard code == downCode ?? code, code == hold.keyCode || code == sendCode || code == tapCode,
                   let flag = Shortcut.modifierFlag[code] else {
                 if downCode != nil, !active { cancelPending() }
                 return false
@@ -92,21 +120,19 @@ final class HotkeyMonitor {
             let pressed = event.flags.contains(flag)
             if pressed, downCode == nil {
                 downCode = code
+                let kind: HoldKind? = code == hold.keyCode ? .regular : code == sendCode ? .send : nil
                 pressedAt = Date()
                 cancelled = false
                 onPress()
-                guard code == hold.keyCode else { return false }
-                timer = Timer.scheduledTimer(withTimeInterval: Self.threshold, repeats: false) { [weak self] _ in
-                    guard let self, self.downCode != nil, !self.cancelled else { return }
-                    self.active = true
-                    self.onLongPress()
-                }
+                if let kind { beginPendingHold(kind) }
             } else if !pressed, downCode != nil {
                 downCode = nil
                 timer?.invalidate()
                 if active {
                     active = false
-                    onRelease()
+                    let kind = holdKind
+                    holdKind = nil
+                    onRelease(kind == .send)
                 } else if code == tapCode, !cancelled, Date().timeIntervalSince(pressedAt) < Self.threshold {
                     onTap()
                 }
@@ -116,16 +142,28 @@ final class HotkeyMonitor {
         return false
     }
 
+    private func beginPendingHold(_ kind: HoldKind) {
+        cancelled = false
+        holdKind = kind
+        timer = Timer.scheduledTimer(withTimeInterval: Self.threshold, repeats: false) { [weak self] _ in
+            guard let self, !self.cancelled,
+                  kind == .send ? self.sendSwallowedCode != nil : self.downCode != nil else { return }
+            self.active = true
+            self.onLongPress(kind == .send)
+        }
+    }
+
     private func cancelPending() {
         cancelled = true
         timer?.invalidate()
         timer = nil
+        if !active { holdKind = nil }
     }
 }
 
 enum TextInserter {
     /// 借剪贴板 + ⌘V 上屏，随后恢复原剪贴板
-    static func insert(_ text: String) {
+    static func insert(_ text: String, sendsReturn: Bool = false) {
         let pb = NSPasteboard.general
         let saved: [NSPasteboardItem] = (pb.pasteboardItems ?? []).map { item in
             let copy = NSPasteboardItem()
@@ -142,10 +180,23 @@ enum TextInserter {
             e?.flags = .maskCommand
             e?.post(tap: .cghidEventTap)
         }
+        if sendsReturn { pressReturn(after: 0.12) }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             guard pb.changeCount == change, !saved.isEmpty else { return }
             pb.clearContents()
             pb.writeObjects(saved)
+        }
+    }
+
+    /// Use a private source so modifiers still held by the user cannot turn this into a shortcut.
+    static func pressReturn(after delay: TimeInterval = 0) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            let source = CGEventSource(stateID: .privateState)
+            for isDown in [true, false] {
+                guard let e = CGEvent(keyboardEventSource: source, virtualKey: 36, keyDown: isDown) else { continue }
+                e.flags = []
+                e.post(tap: .cghidEventTap)
+            }
         }
     }
 }

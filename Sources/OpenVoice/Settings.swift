@@ -148,17 +148,27 @@ struct Shortcut: Equatable {
 
     static let defaultRaw = Shortcut(keyCode: 54, modifiers: 0, name: "右 ⌘").raw
 
-    /// "off" 表示关闭；按原始字符串缓存，事件回调里频繁读取
-    private static var cache: (String, Shortcut?) = ("", nil)
+    static let sendHoldDefaultRaw = Shortcut(keyCode: 62, modifiers: 0, name: "右 ⌃").raw
+
+    /// "off" 表示关闭；按设置项分别缓存，事件回调里频繁读取
+    private static var tapCache: (String, Shortcut?) = ("", nil)
     static var tap: Shortcut? {
         let raw = UserDefaults.standard.string(forKey: "tapShortcut") ?? defaultRaw
-        if cache.0 != raw { cache = (raw, Shortcut(raw: raw)) }
-        return cache.1
+        if tapCache.0 != raw { tapCache = (raw, Shortcut(raw: raw)) }
+        return tapCache.1
+    }
+
+    private static var sendHoldCache: (String, Shortcut?) = ("", nil)
+    static var sendHold: Shortcut? {
+        let raw = UserDefaults.standard.string(forKey: "sendHoldShortcut") ?? sendHoldDefaultRaw
+        if sendHoldCache.0 != raw { sendHoldCache = (raw, Shortcut(raw: raw)) }
+        return sendHoldCache.1
     }
 }
 
-/// 点击后录制下一次按键：单独点按一个修饰键，或按下 修饰键+键；Esc 取消
+/// 录制下一次按键：单独按一个修饰键，或按下 修饰键+键；Esc 取消
 struct ShortcutField: View {
+    var kind = "点按"
     @Binding var raw: String
     @State private var recording = false
     @State private var monitor: Any?
@@ -172,7 +182,7 @@ struct ShortcutField: View {
             if !recording, raw != "off" {
                 Button { raw = "off" } label: { Image(systemName: "xmark.circle.fill") }
                     .buttonStyle(.borderless)
-                    .help("关闭点按快捷键")
+                    .help("关闭\(kind)快捷键")
             }
         }
         .onDisappear { stop() }
@@ -223,6 +233,7 @@ struct SettingsView: View {
     @AppStorage("channel") private var channel = Channel.doubao.rawValue
     @AppStorage("hotkey") private var hotkey = Hotkey.rightOption.rawValue
     @AppStorage("tapShortcut") private var tapShortcut = Shortcut.defaultRaw
+    @AppStorage("sendHoldShortcut") private var sendHoldShortcut = Shortcut.sendHoldDefaultRaw
     @AppStorage("silence") private var silence = 1.5
     @AppStorage("hudStyle") private var hudStyle = HUDStyle.compact.rawValue
     @AppStorage("streaming") private var streaming = true
@@ -273,6 +284,14 @@ struct SettingsView: View {
                     }
                 }
                 LabeledContent("点按快捷键") { ShortcutField(raw: $tapShortcut) }
+                LabeledContent("长按并发送") {
+                    ShortcutField(kind: "长按并发送", raw: $sendHoldShortcut)
+                }
+                if let sendHold = Shortcut(raw: sendHoldShortcut), hasShortcutConflict(sendHold) {
+                    Text("长按并发送快捷键与其他快捷键冲突，请重新绑定。")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
                 if tapShortcut != "off" {
                     Picker("静音自动结束", selection: $silence) {
                         ForEach([1.0, 1.5, 2.0, 3.0, 5.0], id: \.self) { Text("\($0, specifier: "%g") 秒").tag($0) }
@@ -297,6 +316,7 @@ struct SettingsView: View {
             } footer: {
                 Text((streaming ? "在任意输入框中长按快捷键说话，识别结果实时打到光标处，松开后按定稿修正。"
                                 : "在任意输入框中长按快捷键说话，松开后识别结果粘贴到光标处。")
+                     + (Shortcut(raw: sendHoldShortcut).map { "\n长按 \($0.title) 说话，定稿上屏后自动回车发送；渠道为「全部」时自动采用第一个非空定稿。" } ?? "")
                      + (tapShortcut == "off" ? "" : "\n或点按一下点按快捷键开始聆听，停顿 \(String(format: "%g", silence)) 秒自动结束，再点一下可提前结束。")
                      + (channel == Channel.all.rawValue ? "\n说完后在输入框上方列出各渠道结果，点击或 ↑↓ 回车上屏。" : ""))
                     .font(.caption).foregroundStyle(.secondary)
@@ -345,6 +365,12 @@ struct SettingsView: View {
         } message: {
             Text("将下载离线引擎库和模型到“应用程序支持/OpenVoice/offline”，下载完成后可随时删除。")
         }
+    }
+
+    private func hasShortcutConflict(_ shortcut: Shortcut) -> Bool {
+        if shortcut.isModifier, let primary = Hotkey(rawValue: hotkey), shortcut.keyCode == primary.keyCode { return true }
+        guard let tap = Shortcut.tap else { return false }
+        return shortcut.keyCode == tap.keyCode && shortcut.modifiers == tap.modifiers
     }
 
     private func openPrivacy(_ anchor: String) {
