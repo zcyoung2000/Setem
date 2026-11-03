@@ -74,7 +74,7 @@ git tag v0.2.0 && git push origin v0.2.0
 | `Audio.swift` | AudioQueue 采集 16kHz 单声道、音量计算、设备枚举 |
 | `System.swift` | 全局快捷键（CGEventTap）、上屏、HUD |
 | `Core.swift` | Opus 编码、protobuf 编解码、WebSocket 封装 |
-| `Scripts/icon.swift` | 生成 App 图标 |
+| `Scripts/icon.swift` | 将 `docs/icon.png` 生成各尺寸 App 图标 |
 
 音频以 20ms 一帧 Opus 编码后上传。识别设备身份在本机运行时生成，保存在 `~/Library/Application Support/OpenVoice/`。
 
