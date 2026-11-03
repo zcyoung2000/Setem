@@ -71,7 +71,7 @@ enum HUDStyle: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .compact: "紧凑"
-        case .standard: "标准（原来大）"
+        case .standard: "标准"
         }
     }
     static var current: HUDStyle {
