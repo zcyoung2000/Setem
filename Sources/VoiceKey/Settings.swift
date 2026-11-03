@@ -37,8 +37,13 @@ enum Hotkey: String, CaseIterable, Identifiable {
         case .rightOption: "右 Option ⌥"
         case .rightCommand: "右 Command ⌘"
         case .rightControl: "右 Control ⌃"
-        case .fn: "Fn 🌐"
+        case .fn: "Fn"
         }
+    }
+
+    /// SF Symbols provides the system-rendered globe for the Fn key.
+    var symbolName: String? {
+        self == .fn ? "globe" : nil
     }
 
     var keyCode: Int64 {
@@ -218,7 +223,19 @@ struct SettingsView: View {
                 .onChange(of: channel) { if $1 == Channel.offline.rawValue { offline.download() } }
                 if channel == Channel.offline.rawValue { OfflineStatus(offline: offline) }
                 Picker("长按快捷键", selection: $hotkey) {
-                    ForEach(Hotkey.allCases) { Text($0.title).tag($0.rawValue) }
+                    ForEach(Hotkey.allCases) { hotkey in
+                        if let symbolName = hotkey.symbolName {
+                            HStack {
+                                Text(hotkey.title)
+                                Image(systemName: symbolName)
+                            }
+                            .foregroundStyle(.primary)
+                                .tag(hotkey.rawValue)
+                        } else {
+                            Text(hotkey.title)
+                                .tag(hotkey.rawValue)
+                        }
+                    }
                 }
                 LabeledContent("点按快捷键") { ShortcutField(raw: $tapShortcut) }
                 if tapShortcut != "off" {
