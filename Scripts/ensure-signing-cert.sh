@@ -1,16 +1,16 @@
 #!/bin/bash
 # Return a persistent local signing identity, creating/importing it when needed.
 set -euo pipefail
-NAME="VoiceKey Self-Signed"
+NAME="OpenVoice Self-Signed"
 STORE="$(cd "$(dirname "$0")/.." && pwd)/build/signing"
-KEYCHAIN="$STORE/voicekey.keychain-db"
+KEYCHAIN="$STORE/openvoice.keychain-db"
 
 if [[ -n "${SIGN_IDENTITY:-}" ]]; then
     echo "$SIGN_IDENTITY"
     exit 0
 fi
 
-if [[ ! -f "$STORE/voicekey.p12" ]]; then
+if [[ ! -f "$STORE/openvoice.p12" ]]; then
     "$(dirname "$0")/gen-cert.sh" "$STORE" >&2
 fi
 
@@ -26,7 +26,7 @@ fi
 
 security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >&2
 if ! security find-certificate -c "$NAME" "$KEYCHAIN" >/dev/null 2>&1; then
-    security import "$STORE/voicekey.p12" -P "$(<"$STORE/voicekey.p12.password")" \
+    security import "$STORE/openvoice.p12" -P "$(<"$STORE/openvoice.p12.password")" \
         -k "$KEYCHAIN" -T /usr/bin/codesign >&2
 fi
 security set-key-partition-list -S apple-tool:,apple:,codesign: -s \

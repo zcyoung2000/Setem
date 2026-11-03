@@ -31,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var streamingNow = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        migrateLegacyState()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         setIcon(recording: false)
         recorder.onLevel = { [weak self] v in
@@ -357,7 +358,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func setIcon(recording: Bool) {
-        statusItem.button?.image = NSImage(systemSymbolName: recording ? "mic.fill" : "mic", accessibilityDescription: "VoiceKey")
+        statusItem.button?.image = NSImage(systemSymbolName: recording ? "mic.fill" : "mic", accessibilityDescription: "OpenVoice")
+    }
+
+    /// Bundle ID and the app-support directory changed with the OpenVoice rename.
+    private func migrateLegacyState() {
+        _ = appSupportDirectory()
+
+        let preferences = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Preferences/do.j3.voicekey.plist")
+        guard let values = NSDictionary(contentsOf: preferences) as? [String: Any] else { return }
+
+        let defaults = UserDefaults.standard
+        for (key, value) in values where defaults.object(forKey: key) == nil {
+            defaults.set(value, forKey: key)
+        }
     }
 
     // MARK: - 菜单
@@ -413,7 +428,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func openSettings() {
         if settingsWindow == nil {
             let window = NSWindow(contentViewController: NSHostingController(rootView: SettingsView()))
-            window.title = "VoiceKey 设置"
+            window.title = "OpenVoice 设置"
             window.styleMask = [.titled, .closable]
             window.isReleasedWhenClosed = false
             window.center()

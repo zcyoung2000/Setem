@@ -19,12 +19,12 @@ jobs:
           VER="${GITHUB_REF_NAME#v}"
           [[ "$GITHUB_REF_TYPE" == tag ]] || VER="0.0.0-dev"
           VERSION="$VER" BUILD="$GITHUB_RUN_NUMBER" SIGN_IDENTITY=- ./build.sh
-          ./Scripts/dmg.sh "VoiceKey-$VER.dmg"
-          echo "DMG=VoiceKey-$VER.dmg" >> "$GITHUB_ENV"
+          ./Scripts/dmg.sh "OpenVoice-$VER.dmg"
+          echo "DMG=OpenVoice-$VER.dmg" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: VoiceKey
+          name: OpenVoice
           path: ${{ env.DMG }}
 
       - name: Publish release
@@ -32,5 +32,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" "$DMG" --title "VoiceKey $GITHUB_REF_NAME" --generate-notes \
-            --notes "未经 Apple 公证（ad-hoc 签名）。打开 DMG 将 VoiceKey 拖到「应用程序」后，首次运行前在终端执行：\`xattr -dr com.apple.quarantine /Applications/VoiceKey.app\`"
+          gh release create "$GITHUB_REF_NAME" "$DMG" --title "OpenVoice $GITHUB_REF_NAME" --generate-notes \
+            --notes "未经 Apple 公证（ad-hoc 签名）。打开 DMG 将 OpenVoice 拖到「应用程序」后，首次运行前在终端执行：\`xattr -dr com.apple.quarantine /Applications/OpenVoice.app\`"

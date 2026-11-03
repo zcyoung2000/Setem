@@ -1,6 +1,6 @@
-<p align="center"><img src="docs/icon.png" width="128" alt="VoiceKey"></p>
+<p align="center"><img src="docs/icon.png" width="128" alt="OpenVoice"></p>
 
-<h1 align="center">VoiceKey</h1>
+<h1 align="center">OpenVoice</h1>
 
 <p align="center">macOS 菜单栏语音输入：在任意输入框里按住或点按快捷键说话，识别结果直接打到光标处。</p>
 
@@ -15,19 +15,19 @@
 
 ## 安装
 
-从 [Releases](https://github.com/J3n5en/voicekey/releases) 下载 `VoiceKey-x.y.z.dmg`，打开后将 VoiceKey 拖到「应用程序」。
+从 [Releases](../../releases) 下载 `OpenVoice-x.y.z.dmg`，打开后将 OpenVoice 拖到「应用程序」。
 
 发布包为 ad-hoc 签名、未经 Apple 公证，首次运行前需解除隔离：
 
 ```bash
-xattr -dr com.apple.quarantine /Applications/VoiceKey.app
+xattr -dr com.apple.quarantine /Applications/OpenVoice.app
 ```
 
 要求 macOS 15+。通用包，Apple 芯片与 Intel 均可直接运行，无需安装任何依赖。
 
 ## 使用
 
-1. 启动后出现在菜单栏（麦克风图标）。图标被刘海或菜单栏管理工具挡住时，再次打开 VoiceKey.app 即可弹出设置
+1. 启动后出现在菜单栏（麦克风图标）。图标被刘海或菜单栏管理工具挡住时，再次打开 OpenVoice.app 即可弹出设置
 2. 按提示授予 **辅助功能**（监听快捷键、上屏）和 **麦克风** 权限
 3. 在设置中选择渠道、快捷键、麦克风，然后在任意输入框中说话
 
@@ -39,21 +39,21 @@ xattr -dr com.apple.quarantine /Applications/VoiceKey.app
 | 静音自动结束 | 1.5 秒 |
 | 边说边上屏 | 开 |
 
-**离线识别**：首次选择「离线」渠道时自动下载引擎库（约 8MB，来自本仓库 [offline-libs](https://github.com/J3n5en/voicekey/releases/tag/offline-libs) Release）和模型（约 177MB，来自字节 CDN），保存在 `~/Library/Application Support/VoiceKey/offline/`。之后断网也能用；识别时会在后台进程中占用约 1GB 内存，空闲 5 分钟后自动释放。
+**离线识别**：首次选择「离线」渠道时会先询问是否下载引擎库（约 8MB，来自上游 [offline-libs](https://github.com/J3n5en/voicekey/releases/tag/offline-libs) Release）和模型（约 177MB，来自字节 CDN），保存在 `~/Library/Application Support/OpenVoice/offline/`。之后断网也能用；识别时会在后台进程中占用约 1GB 内存，空闲 5 分钟后自动释放，也可随时在设置中删除。
 
-单个修饰键可同时作为长按键和点按键：快速点一下为点按，按住超过 0.3 秒为长按。设为组合键的点按快捷键会被 VoiceKey 拦截，不再传给前台应用。
+单个修饰键可同时作为长按键和点按键：快速点一下为点按，按住超过 0.3 秒为长按。设为组合键的点按快捷键会被 OpenVoice 拦截，不再传给前台应用。
 
 ## 从源码构建
 
 ```bash
-./build.sh            # 产物在 build/VoiceKey.app（arm64 + x86_64 通用包）
+./build.sh            # 产物在 build/OpenVoice.app（arm64 + x86_64 通用包）
 ```
 
 - 只需 Xcode 命令行工具；Opus 由 `Scripts/opus.sh` 从官方源码编译为通用静态库，首次构建自动下载并校验
-- 本地有 Apple Development 证书时自动用它签名，重建后系统权限不会丢失；可用 `SIGN_IDENTITY` 指定证书，`-` 为 ad-hoc
+- 本地自动生成并复用 `OpenVoice Self-Signed` 固定签名证书；可用 `SIGN_IDENTITY` 指定证书，`-` 为 ad-hoc
 - `VERSION` / `BUILD` 环境变量设置版本号
-- 打包 DMG：`./Scripts/dmg.sh build/VoiceKey.dmg`（窗口布局与背景见 `Scripts/dmg/`）
-- 调试识别链路：`build/VoiceKey.app/Contents/MacOS/VoiceKey --test doubao|wetype file.wav`
+- 打包 DMG：`./Scripts/dmg.sh build/OpenVoice.dmg`（窗口布局与背景见 `Scripts/dmg/`）
+- 调试识别链路：`build/OpenVoice.app/Contents/MacOS/OpenVoice --test doubao|wetype file.wav`
 
 ## 发布
 
@@ -76,7 +76,7 @@ git tag v0.2.0 && git push origin v0.2.0
 | `Core.swift` | Opus 编码、protobuf 编解码、WebSocket 封装 |
 | `Scripts/icon.swift` | 生成 App 图标 |
 
-音频以 20ms 一帧 Opus 编码后上传。识别设备身份在本机运行时生成，保存在 `~/Library/Application Support/VoiceKey/`。
+音频以 20ms 一帧 Opus 编码后上传。识别设备身份在本机运行时生成，保存在 `~/Library/Application Support/OpenVoice/`。
 
 ## 声明
 

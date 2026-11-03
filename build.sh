@@ -1,5 +1,5 @@
 #!/bin/bash
-# 构建 VoiceKey.app（用固定证书签名，重建后辅助功能/麦克风授权不丢）
+# 构建 OpenVoice.app（用固定证书签名，重建后辅助功能/麦克风授权不丢）
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -16,7 +16,7 @@ PLATFORM_LINK_FLAGS=(
 
 # 通用包：Apple 芯片与 Intel 共用一个 App
 xcrun swift build -c release --arch arm64 --arch x86_64 "${PLATFORM_LINK_FLAGS[@]}"
-BIN="$(xcrun swift build -c release --arch arm64 --arch x86_64 "${PLATFORM_LINK_FLAGS[@]}" --show-bin-path)/VoiceKey"
+BIN="$(xcrun swift build -c release --arch arm64 --arch x86_64 "${PLATFORM_LINK_FLAGS[@]}" --show-bin-path)/OpenVoice"
 
 # 图标由 Scripts/icon.swift 生成，脚本未改动则复用
 ICNS=build/AppIcon.icns
@@ -32,7 +32,7 @@ if [ ! -f "$ICNS" ] || [ Scripts/icon.swift -nt "$ICNS" ]; then
     rm -rf "$SET" build/icon_1024.png
 fi
 
-APP=build/VoiceKey.app
+APP=build/OpenVoice.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/"
@@ -44,9 +44,9 @@ cat > "$APP/Contents/Info.plist" <<EOF
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleIdentifier</key><string>do.j3.voicekey</string>
-    <key>CFBundleName</key><string>VoiceKey</string>
-    <key>CFBundleExecutable</key><string>VoiceKey</string>
+    <key>CFBundleIdentifier</key><string>do.j3.openvoice</string>
+    <key>CFBundleName</key><string>OpenVoice</string>
+    <key>CFBundleExecutable</key><string>OpenVoice</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$VERSION</string>

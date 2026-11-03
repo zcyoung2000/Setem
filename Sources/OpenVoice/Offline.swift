@@ -138,10 +138,10 @@ private final class Fetcher: NSObject, URLSessionDownloadDelegate, @unchecked Se
     }
 }
 
-/// 离线识别子进程（VoiceKey --offline-worker <model>，stdin/stdout JSON-lines），崩溃不影响主进程，空闲 5 分钟退出释放内存
+/// 离线识别子进程（OpenVoice --offline-worker <model>，stdin/stdout JSON-lines），崩溃不影响主进程，空闲 5 分钟退出释放内存
 final class OfflineWorker: @unchecked Sendable {
     static let shared = OfflineWorker()
-    private let queue = DispatchQueue(label: "voicekey.offline")
+    private let queue = DispatchQueue(label: "openvoice.offline")
     private var process: Process?
     private var input: FileHandle?
     private var output: FileHandle?
