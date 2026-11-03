@@ -4,9 +4,19 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 ./Scripts/opus.sh
+
+# SwiftPM records the package's minimum platform as the Mach-O SDK version.
+# Explicitly record the selected SDK so macOS 26+ applies its current controls/materials.
+MACOS_MIN=15.0
+SDK_VERSION=$(xcrun --sdk macosx --show-sdk-version)
+PLATFORM_LINK_FLAGS=(
+    -Xlinker -platform_version -Xlinker macos
+    -Xlinker "$MACOS_MIN" -Xlinker "$SDK_VERSION"
+)
+
 # 通用包：Apple 芯片与 Intel 共用一个 App
-xcrun swift build -c release --arch arm64 --arch x86_64
-BIN="$(xcrun swift build -c release --arch arm64 --arch x86_64 --show-bin-path)/VoiceKey"
+xcrun swift build -c release --arch arm64 --arch x86_64 "${PLATFORM_LINK_FLAGS[@]}"
+BIN="$(xcrun swift build -c release --arch arm64 --arch x86_64 "${PLATFORM_LINK_FLAGS[@]}" --show-bin-path)/VoiceKey"
 
 # 图标由 Scripts/icon.swift 生成，脚本未改动则复用
 ICNS=build/AppIcon.icns
