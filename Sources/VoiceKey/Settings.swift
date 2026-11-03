@@ -65,6 +65,20 @@ enum Hotkey: String, CaseIterable, Identifiable {
     }
 }
 
+private struct HotkeyMenuItem: View {
+    let hotkey: Hotkey
+
+    var body: some View {
+        if let symbolName = hotkey.symbolName {
+            // Picker moves standalone images to AppKit's leading icon slot;
+            // inline text keeps the globe after the key name.
+            Text("\(hotkey.title) ") + Text(Image(systemName: symbolName))
+        } else {
+            Text(hotkey.title)
+        }
+    }
+}
+
 /// 用户录制的点按快捷键：单个修饰键（区分左右）或 修饰键+按键 组合
 struct Shortcut: Equatable {
     var keyCode: Int64
@@ -224,17 +238,8 @@ struct SettingsView: View {
                 if channel == Channel.offline.rawValue { OfflineStatus(offline: offline) }
                 Picker("长按快捷键", selection: $hotkey) {
                     ForEach(Hotkey.allCases) { hotkey in
-                        if let symbolName = hotkey.symbolName {
-                            HStack {
-                                Text(hotkey.title)
-                                Image(systemName: symbolName)
-                            }
-                            .foregroundStyle(.primary)
-                                .tag(hotkey.rawValue)
-                        } else {
-                            Text(hotkey.title)
-                                .tag(hotkey.rawValue)
-                        }
+                        HotkeyMenuItem(hotkey: hotkey)
+                            .tag(hotkey.rawValue)
                     }
                 }
                 LabeledContent("点按快捷键") { ShortcutField(raw: $tapShortcut) }
