@@ -37,6 +37,34 @@ if let i = args.firstIndex(of: "--test"), i + 2 < args.count {
     RunLoop.main.run()
 }
 
+if args.contains("--preview-hud") {
+    MainActor.assumeIsolated {
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+        if args.contains("standard") {
+            UserDefaults.standard.set(HUDStyle.standard.rawValue, forKey: "hudStyle")
+        } else if args.contains("compact") {
+            UserDefaults.standard.set(HUDStyle.compact.rawValue, forKey: "hudStyle")
+        }
+        let hud = HUD()
+        hud.show("", listening: true)
+
+        var step = 0
+        Timer.scheduledTimer(withTimeInterval: 0.04, repeats: true) { _ in
+            step += 1
+            let t = Float(step) * 0.08
+            let lvl = abs(sin(t * 1.5)) * 0.45 + abs(cos(t * 2.3)) * 0.25
+            hud.level(lvl)
+        }
+
+        let seconds = args.dropFirst().compactMap { Double($0) }.first ?? 6.0
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
+            exit(0)
+        }
+        app.run()
+    }
+}
+
 MainActor.assumeIsolated {
     let app = NSApplication.shared
     let delegate = AppDelegate()
