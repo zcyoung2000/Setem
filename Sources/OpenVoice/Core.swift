@@ -163,11 +163,43 @@ final class WebSocket {
     func close() { task.cancel(with: .normalClosure, reason: nil) }
 }
 
+private enum AppSupport {
+    static let root: URL = {
+        let fileManager = FileManager.default
+        let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let root = base.appendingPathComponent("OpenVoice", isDirectory: true)
+        let legacy = base.appendingPathComponent("VoiceKey", isDirectory: true)
+
+        // Carry credentials and the offline model forward from the old app name.
+        if !fileManager.fileExists(atPath: root.path) {
+            if fileManager.fileExists(atPath: legacy.path) {
+                try? fileManager.moveItem(at: legacy, to: root)
+            }
+        } else if fileManager.fileExists(atPath: legacy.path) {
+            let items = (try? fileManager.contentsOfDirectory(
+                at: legacy,
+                includingPropertiesForKeys: nil,
+                options: []
+            )) ?? []
+            for item in items {
+                let destination = root.appendingPathComponent(item.lastPathComponent)
+                if !fileManager.fileExists(atPath: destination.path) {
+                    try? fileManager.moveItem(at: item, to: destination)
+                }
+            }
+        }
+
+        try? fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }()
+}
+
 func appSupportFile(_ name: String) -> URL {
-    let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("VoiceKey", isDirectory: true)
-    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    return dir.appendingPathComponent(name)
+    AppSupport.root.appendingPathComponent(name)
+}
+
+func appSupportDirectory() -> URL {
+    AppSupport.root
 }
 
 extension Data {

@@ -323,7 +323,7 @@ struct SettingsView: View {
                     : channelBeforeOffline
             }
         } message: {
-            Text("将下载离线引擎库和模型到“应用程序支持/VoiceKey/offline”，下载完成后可随时删除。")
+            Text("将下载离线引擎库和模型到“应用程序支持/OpenVoice/offline”，下载完成后可随时删除。")
         }
     }
 

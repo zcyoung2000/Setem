@@ -94,7 +94,7 @@ final class FrameConverter {
 
 /// AudioQueue 直接按 16kHz/mono/Int16 采集（系统负责重采样），按 UID 指定输入设备
 final class Recorder {
-    private let callbackQueue = DispatchQueue(label: "voicekey.recorder")
+    private let callbackQueue = DispatchQueue(label: "openvoice.recorder")
     private var queue: AudioQueueRef?
     private var pending: [Int16] = []
     private var continuation: AsyncStream<[Int16]>.Continuation?
