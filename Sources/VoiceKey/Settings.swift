@@ -222,12 +222,13 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section {
+            Section("识别渠道") {
                 HStack {
-                    Text("识别渠道")
+                    Text("当前渠道")
                     Spacer()
                     Button("对比") { showCompare = true }
-                        .buttonStyle(.borderless)
+                        .buttonStyle(.plain)
+                        .focusEffectDisabled()
                 }
                 Picker("", selection: $channel) {
                     ForEach(Channel.available) { Text($0.title).tag($0.rawValue) }
@@ -236,6 +237,9 @@ struct SettingsView: View {
                 .labelsHidden()
                 .onChange(of: channel) { if $1 == Channel.offline.rawValue { offline.download() } }
                 if channel == Channel.offline.rawValue { OfflineStatus(offline: offline) }
+            }
+
+            Section {
                 Picker("长按快捷键", selection: $hotkey) {
                     ForEach(Hotkey.allCases) { hotkey in
                         HotkeyMenuItem(hotkey: hotkey)
@@ -257,6 +261,8 @@ struct SettingsView: View {
                         Text("已断开（暂用系统默认）").tag(micUID)
                     }
                 }
+            } header: {
+                Text("快捷键与输入")
             } footer: {
                 Text((streaming ? "在任意输入框中长按快捷键说话，识别结果实时打到光标处，松开后按定稿修正。"
                                 : "在任意输入框中长按快捷键说话，松开后识别结果粘贴到光标处。")
@@ -333,11 +339,13 @@ struct ChannelCompareSheet: View {
                 Text("渠道对比").font(.headline)
                 Spacer()
                 Button("关闭") { dismiss() }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(.plain)
+                    .focusEffectDisabled()
             }
             Button(compare.phase == .recording ? "说完了" : compare.phase == .recognizing ? "取消识别" : "开始说话") {
                 compare.toggle()
             }
+            .focusEffectDisabled()
             if compare.phase == .recording {
                 Text("正在录音，说完再点一次").font(.caption).foregroundStyle(.secondary)
             } else if compare.phase == .recognizing {
@@ -361,6 +369,7 @@ struct ChannelCompareSheet: View {
                             channel = row.channel.rawValue
                             dismiss()
                         }
+                        .focusEffectDisabled()
                     }
                 }
                 .padding(.vertical, 4)
