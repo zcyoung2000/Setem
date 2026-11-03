@@ -20,7 +20,7 @@ BIN="$(xcrun swift build -c release --arch arm64 --arch x86_64 "${PLATFORM_LINK_
 
 # 图标由 Scripts/icon.swift 生成，脚本未改动则复用
 ICNS=build/AppIcon.icns
-if [ ! -f "$ICNS" ] || [ Scripts/icon.swift -nt "$ICNS" ]; then
+if [ ! -f "$ICNS" ] || [ docs/icon.png -nt "$ICNS" ] || [ Scripts/icon.swift -nt "$ICNS" ]; then
     SET=build/AppIcon.iconset
     rm -rf "$SET" && mkdir -p "$SET"
     xcrun swift Scripts/icon.swift build/icon_1024.png
