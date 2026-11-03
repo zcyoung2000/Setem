@@ -260,6 +260,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .liquidGlassWindowBackground()
         .frame(width: 420)
         .fixedSize()
         .onReceive(timer) { _ in
@@ -276,6 +277,26 @@ struct SettingsView: View {
 
     private func openPrivacy(_ anchor: String) {
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)")!)
+    }
+}
+
+/// Let the hosted settings window use Liquid Glass on macOS 26+, while preserving the grouped form on macOS 15.
+private struct LiquidGlassWindowBackground: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content
+                .scrollContentBackground(.hidden)
+                .glassEffect(.regular.interactive(), in: Rectangle())
+                .ignoresSafeArea(.container, edges: .top)
+        } else {
+            content
+        }
+    }
+}
+
+private extension View {
+    func liquidGlassWindowBackground() -> some View {
+        modifier(LiquidGlassWindowBackground())
     }
 }
 

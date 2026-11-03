@@ -35,3 +35,8 @@
 - 千问按 main 语义以 `newRoundId` 标记 ASR 定稿，不再在首个 partial 后提前返回；同时为复用 Session 的会话状态加锁，避免收发任务并发读写。
 - 豆包重放留底加锁；二次失败错误始终保留首次 `SessionFailed` 原因；握手任意失败均清除设备缓存。
 - 离线引擎移除额外的 200ms 前导静音，与 main 输入一致。
+
+## macOS 27 界面适配
+
+- 修复 SwiftPM 在包最低平台为 macOS 15 时把 Mach-O `LC_BUILD_VERSION.sdk` 也记成 15.0 的问题；构建时显式记录当前 Xcode SDK 版本，保留最低系统 macOS 15。文件：`build.sh`。
+- 设置窗在 macOS 26+ 使用透明 full-size 内容与 SwiftUI Liquid Glass；macOS 15 保持原 grouped Form。录音 HUD 与多渠道候选浮层同样在 macOS 26+ 切换为 Liquid Glass，旧系统回退 `regularMaterial`。文件：`Sources/VoiceKey/AppDelegate.swift`、`Settings.swift`、`System.swift`。

@@ -397,6 +397,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let window = NSWindow(contentViewController: NSHostingController(rootView: SettingsView()))
             window.title = "VoiceKey 设置"
             window.styleMask = [.titled, .closable]
+            if #available(macOS 26.0, *) {
+                window.styleMask.insert(.fullSizeContentView)
+                window.titlebarAppearsTransparent = true
+                window.isOpaque = false
+                window.backgroundColor = .clear
+            }
             window.isReleasedWhenClosed = false
             window.center()
             settingsWindow = window

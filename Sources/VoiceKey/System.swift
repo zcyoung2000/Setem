@@ -248,8 +248,34 @@ private struct HUDView: View {
         .font(.system(size: 14))
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
-        .background(.regularMaterial, in: Capsule())
+        .liquidGlassBackground(in: Capsule())
         .fixedSize()
+    }
+}
+
+/// Liquid Glass is only available on macOS 26 and later; retain the old material on macOS 15.
+private struct LiquidGlassBackground<ShapeType: Shape>: ViewModifier {
+    let shape: ShapeType
+    let interactive: Bool
+
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content.glassEffect(
+                interactive ? Glass.regular.interactive() : .regular,
+                in: shape
+            )
+        } else {
+            content.background(.regularMaterial, in: shape)
+        }
+    }
+}
+
+private extension View {
+    func liquidGlassBackground<ShapeType: Shape>(
+        in shape: ShapeType,
+        interactive: Bool = false
+    ) -> some View {
+        modifier(LiquidGlassBackground(shape: shape, interactive: interactive))
     }
 }
 
@@ -400,7 +426,10 @@ private struct PickView: View {
         }
         .padding(.bottom, 8)
         .frame(width: 420, alignment: .topLeading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .liquidGlassBackground(
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous),
+            interactive: true
+        )
     }
 }
 
