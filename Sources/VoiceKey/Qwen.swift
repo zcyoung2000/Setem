@@ -61,6 +61,7 @@ final class QwenEngine: ASREngine {
                         }
                         if let nr = d["newRoundId"] as? String, !nr.isEmpty {
                             c.noteRound(nr)
+                            transcript.setDone()
                         }
                     }
                     Self.ingest(obj, into: transcript)
@@ -85,7 +86,7 @@ final class QwenEngine: ASREngine {
                 try await c.sendAudio(Data(pcm.prefix(3840)))
             }
             try await c.complete()
-            for _ in 0..<8 where transcript.waiting {
+            for _ in 0..<8 where !transcript.isDone {
                 try await Task.sleep(for: .milliseconds(250))
             }
             c.reset()
@@ -101,10 +102,20 @@ final class QwenEngine: ASREngine {
     fileprivate final class Session {
         let auth: QwenAuth
         let ws: QwenRawWS
+        private let stateLock = NSLock()
         private var sessionId = ""
         private var roundId = ""
         private var attached = false
         var alive: Bool { ws.alive }
+
+        private struct State {
+            let sessionId: String
+            let roundId: String
+        }
+
+        private var state: State {
+            stateLock.withLock { State(sessionId: sessionId, roundId: roundId) }
+        }
 
         init(auth: QwenAuth, ws: QwenRawWS) {
             self.auth = auth
@@ -137,23 +148,31 @@ final class QwenEngine: ASREngine {
         }
 
         func sendAudio(_ pcm: Data) async throws {
-            try await ws.send(binary: QwenEngine.asrSend(auth: auth, sessionId: sessionId, roundId: roundId, pcm: pcm))
+            let s = state
+            try await ws.send(binary: QwenEngine.asrSend(auth: auth, sessionId: s.sessionId, roundId: s.roundId, pcm: pcm))
         }
 
         func complete() async throws {
-            try await ws.send(binary: QwenEngine.asrComplete(auth: auth, sessionId: sessionId, roundId: roundId))
+            let s = state
+            try await ws.send(binary: QwenEngine.asrComplete(auth: auth, sessionId: s.sessionId, roundId: s.roundId))
         }
 
         func noteSession(_ id: String, round: String?) {
-            sessionId = id
-            roundId = round.flatMap { $0.isEmpty ? nil : $0 } ?? "ro_\(id)_0"
-            attached = true
+            stateLock.withLock {
+                sessionId = id
+                roundId = round.flatMap { $0.isEmpty ? nil : $0 } ?? "ro_\(id)_0"
+                attached = true
+            }
         }
-        func noteRound(_ id: String) { roundId = id }
+        func noteRound(_ id: String) {
+            stateLock.withLock { roundId = id }
+        }
         func reset() {
-            attached = false
-            sessionId = ""
-            roundId = ""
+            stateLock.withLock {
+                attached = false
+                sessionId = ""
+                roundId = ""
+            }
         }
 
         func close() { ws.close() }
@@ -227,11 +246,15 @@ final class QwenEngine: ASREngine {
         private let lock = NSLock()
         private let partial: (String) -> Void
         private var asr = ""
+        private var done = false
         init(partial: @escaping (String) -> Void) { self.partial = partial }
         var result: String { lock.withLock { asr } }
-        var waiting: Bool { result.isEmpty }
+        var isDone: Bool { lock.withLock { done } }
         func setASR(_ s: String) {
             lock.lock(); asr = s; let p = partial; lock.unlock(); p(s)
+        }
+        func setDone() {
+            lock.lock(); done = true; lock.unlock()
         }
     }
 

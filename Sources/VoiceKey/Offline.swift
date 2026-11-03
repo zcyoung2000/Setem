@@ -216,7 +216,6 @@ final class OfflineWorker: @unchecked Sendable {
 
 final class OfflineEngine: ASREngine {
     func run(audio: AsyncStream<[Int16]>, partial: @escaping (String) -> Void) async throws -> String {
-        let audio = withLeadingSilence(audio)
         guard OfflineAssets.installed else {
             await MainActor.run { OfflineAssets.shared.download() }
             throw ASRError("离线模型未就绪，请在设置中查看下载进度")
