@@ -219,6 +219,8 @@ struct SettingsView: View {
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     @StateObject private var compare = ChannelCompare()
     @State private var showCompare = false
+    @State private var confirmOfflineDownload = false
+    @State private var channelBeforeOffline = Channel.doubao.rawValue
 
     var body: some View {
         Form {
@@ -235,8 +237,17 @@ struct SettingsView: View {
                 }
                 .pickerStyle(.radioGroup)
                 .labelsHidden()
-                .onChange(of: channel) { if $1 == Channel.offline.rawValue { offline.download() } }
-                if channel == Channel.offline.rawValue { OfflineStatus(offline: offline) }
+                .onChange(of: channel) { old, new in
+                    guard new == Channel.offline.rawValue, !OfflineAssets.installed else { return }
+                    channelBeforeOffline = old
+                    confirmOfflineDownload = true
+                }
+                if channel == Channel.offline.rawValue {
+                    OfflineStatus(offline: offline) {
+                        offline.delete()
+                        if channel == Channel.offline.rawValue { channel = Channel.doubao.rawValue }
+                    }
+                }
             }
 
             Section {
@@ -300,6 +311,20 @@ struct SettingsView: View {
         .sheet(isPresented: $showCompare) {
             ChannelCompareSheet(channel: $channel, compare: compare)
         }
+        .confirmationDialog(
+            "下载离线模型？",
+            isPresented: $confirmOfflineDownload,
+            titleVisibility: .visible
+        ) {
+            Button("下载（约 185MB）") { offline.download() }
+            Button("暂不下载", role: .cancel) {
+                channel = channelBeforeOffline == Channel.offline.rawValue
+                    ? Channel.doubao.rawValue
+                    : channelBeforeOffline
+            }
+        } message: {
+            Text("将下载离线引擎库和模型到“应用程序支持/VoiceKey/offline”，下载完成后可随时删除。")
+        }
     }
 
     private func openPrivacy(_ anchor: String) {
@@ -310,20 +335,42 @@ struct SettingsView: View {
 /// 离线模型下载状态
 struct OfflineStatus: View {
     @ObservedObject var offline: OfflineAssets
+    let onDelete: () -> Void
+    @State private var confirmDelete = false
 
     var body: some View {
         LabeledContent("离线模型（约 190MB）") {
             switch offline.state {
-            case .ready: Text("已就绪").foregroundStyle(.green)
+            case .ready:
+                HStack {
+                    Text("已就绪").foregroundStyle(.green)
+                    Button("删除") { confirmDelete = true }
+                        .buttonStyle(.link)
+                        .focusEffectDisabled()
+                }
             case .downloading(let p):
                 HStack { ProgressView(value: p).frame(width: 120); Text("\(Int(p * 100))%").monospacedDigit() }
-            case .missing: Button("下载") { offline.download() }
+            case .missing:
+                Button("下载") { offline.download() }
+                    .buttonStyle(.link)
+                    .focusEffectDisabled()
             case .failed(let msg):
                 HStack {
                     Text(msg).foregroundStyle(.red).lineLimit(1)
                     Button("重试") { offline.download() }
+                        .buttonStyle(.link)
+                        .focusEffectDisabled()
+                    Button("删除", role: .destructive) { confirmDelete = true }
+                        .buttonStyle(.link)
+                        .focusEffectDisabled()
                 }
             }
+        }
+        .confirmationDialog("删除离线模型？", isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("删除（约 185MB）", role: .destructive) { onDelete() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("将删除本地离线引擎库和模型；之后使用离线识别时需要重新下载。")
         }
     }
 }

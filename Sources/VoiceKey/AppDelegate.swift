@@ -391,8 +391,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func selectChannel(_ sender: NSMenuItem) {
+        let previous = Channel.current.rawValue
         UserDefaults.standard.set(sender.representedObject as? String, forKey: "channel")
-        if Channel.current == .offline { MainActor.assumeIsolated { OfflineAssets.shared.download() } }
+        guard sender.representedObject as? String == Channel.offline.rawValue, !OfflineAssets.installed else { return }
+
+        MainActor.assumeIsolated {
+            let alert = NSAlert()
+            alert.messageText = "下载离线模型？"
+            alert.informativeText = "将下载约 185MB 的离线引擎库和模型，之后可随时在设置中删除。"
+            alert.addButton(withTitle: "下载")
+            alert.addButton(withTitle: "取消")
+
+            if alert.runModal() == .alertFirstButtonReturn {
+                OfflineAssets.shared.download()
+            } else {
+                UserDefaults.standard.set(previous, forKey: "channel")
+            }
+        }
     }
 
     @objc private func openSettings() {
