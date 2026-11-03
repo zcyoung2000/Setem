@@ -39,4 +39,4 @@
 ## macOS 27 界面适配
 
 - 修复 SwiftPM 在包最低平台为 macOS 15 时把 Mach-O `LC_BUILD_VERSION.sdk` 也记成 15.0 的问题；构建时显式记录当前 Xcode SDK 版本，保留最低系统 macOS 15。文件：`build.sh`。
-- 设置窗在 macOS 26+ 使用透明 full-size 内容与 SwiftUI Liquid Glass；macOS 15 保持原 grouped Form。录音 HUD 与多渠道候选浮层同样在 macOS 26+ 切换为 Liquid Glass，旧系统回退 `regularMaterial`。文件：`Sources/VoiceKey/AppDelegate.swift`、`Settings.swift`、`System.swift`。
+- 设置窗保留标准标题栏与 grouped Form，避免 full-size Liquid Glass 嵌入红绿灯和点击时整窗抖动；打开设置时显式激活 accessory app 并置前窗口。录音 HUD 与多渠道候选浮层在 macOS 26+ 切换为 Liquid Glass，旧系统回退 `regularMaterial`。文件：`Sources/VoiceKey/AppDelegate.swift`、`Settings.swift`、`System.swift`。

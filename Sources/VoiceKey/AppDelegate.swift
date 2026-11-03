@@ -397,18 +397,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let window = NSWindow(contentViewController: NSHostingController(rootView: SettingsView()))
             window.title = "VoiceKey 设置"
             window.styleMask = [.titled, .closable]
-            if #available(macOS 26.0, *) {
-                window.styleMask.insert(.fullSizeContentView)
-                window.titlebarAppearsTransparent = true
-                window.isOpaque = false
-                window.backgroundColor = .clear
-            }
             window.isReleasedWhenClosed = false
             window.center()
             settingsWindow = window
         }
-        NSApp.activate()
+        // Accessory apps need an explicit activation request before their key window
+        // is allowed to rise above the current foreground application.
+        NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
+        settingsWindow?.orderFrontRegardless()
     }
 
     /// 菜单栏 App 没有「文件 → 关闭」，⌘W 不会自动关窗口
