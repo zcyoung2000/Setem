@@ -7,6 +7,7 @@ final class HotkeyMonitor {
     var onLongPress: (Bool) -> Void = { _ in }
     var onRelease: (Bool) -> Void = { _ in }
     var onTap: () -> Void = {}
+    var onMeeting: () -> Void = {}
     var onEscape: () -> Void = {}
     /// 挑选浮层打开时吞掉方向键/回车/Esc；返回 true 表示已处理
     var onPickKey: ((PickKey) -> Bool)?
@@ -69,6 +70,13 @@ final class HotkeyMonitor {
         let sendHold = Hotkey.sendHold
         switch type {
         case .keyDown:
+            if let meeting = Shortcut.meeting, !meeting.isModifier, code == meeting.keyCode,
+               event.flags.intersection(Shortcut.mask).rawValue == meeting.modifiers {
+                cancelPending()
+                swallowedCode = code
+                if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 { onMeeting() }
+                return true
+            }
             if code == 53, event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
                 onEscape()
             }

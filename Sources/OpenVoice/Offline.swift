@@ -142,11 +142,27 @@ private final class Fetcher: NSObject, URLSessionDownloadDelegate, @unchecked Se
 final class OfflineWorker: @unchecked Sendable {
     static let shared = OfflineWorker()
     private let queue = DispatchQueue(label: "openvoice.offline")
+    private let processLock = NSLock()
     private var process: Process?
+    private var interrupted = false
     private var input: FileHandle?
     private var output: FileHandle?
     private var buffer = Data()
     private var generation = 0
+
+    func shutdown() async {
+        await withCheckedContinuation { continuation in
+            queue.async { [self] in stop(); continuation.resume() }
+        }
+    }
+
+    /// May run outside the I/O queue: killing a dedicated worker also unblocks a hung pipe read.
+    func interrupt() {
+        processLock.withLock {
+            interrupted = true
+            if let process, process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        }
+    }
 
     func prewarm() {
         queue.async { [self] in
@@ -158,7 +174,8 @@ final class OfflineWorker: @unchecked Sendable {
 
     /// 发一条请求，返回 text 字段
     func call(_ op: String, b64: String? = nil) async throws -> String {
-        try await withCheckedThrowingContinuation { c in
+        try Task.checkCancellation()
+        return try await withCheckedThrowingContinuation { c in
             queue.async { [self] in
                 c.resume(with: Result { try callSync(op, b64: b64) })
                 scheduleIdle()
@@ -181,6 +198,7 @@ final class OfflineWorker: @unchecked Sendable {
     }
 
     private func launch() throws {
+        guard !processLock.withLock({ interrupted }) else { throw CancellationError() }
         guard OfflineAssets.installed, let exe = Bundle.main.executableURL else { throw ASRError("离线模型未下载") }
         let p = Process()
         p.executableURL = exe
@@ -191,7 +209,10 @@ final class OfflineWorker: @unchecked Sendable {
         p.standardOutput = outPipe
         p.standardError = FileHandle.nullDevice
         try p.run()
-        process = p
+        processLock.withLock {
+            process = p
+            if interrupted { kill(p.processIdentifier, SIGKILL) }
+        }
         input = inPipe.fileHandleForWriting
         output = outPipe.fileHandleForReading
         buffer.removeAll()
@@ -214,7 +235,7 @@ final class OfflineWorker: @unchecked Sendable {
             kill(p.processIdentifier, SIGKILL)
             p.waitUntilExit()
         }
-        process = nil
+        processLock.withLock { process = nil }
         input = nil
         output = nil
     }
@@ -226,13 +247,25 @@ final class OfflineWorker: @unchecked Sendable {
 }
 
 final class OfflineEngine: ASREngine {
+    private let dedicatedWorker: Bool
+    init(dedicatedWorker: Bool = false) { self.dedicatedWorker = dedicatedWorker }
+
     func run(audio: AsyncStream<[Int16]>, partial: @escaping (String) -> Void) async throws -> String {
         guard OfflineAssets.installed else {
             throw ASRError("离线模型未下载，请在设置中确认下载")
         }
-        let w = OfflineWorker.shared
-        _ = try await w.call("begin")
+        // Overlapping meeting segments must not reset another segment's local recognizer.
+        let w = dedicatedWorker ? OfflineWorker() : OfflineWorker.shared
+        return try await withTaskCancellationHandler {
+            try await recognize(audio: audio, worker: w, partial: partial)
+        } onCancel: {
+            if self.dedicatedWorker { w.interrupt() }
+        }
+    }
+
+    private func recognize(audio: AsyncStream<[Int16]>, worker w: OfflineWorker, partial: @escaping (String) -> Void) async throws -> String {
         do {
+            _ = try await w.call("begin")
             var pcm = Data(), last = ""
             func flush() async throws {
                 let text = try await w.call("chunk", b64: pcm.base64EncodedString())
@@ -240,13 +273,17 @@ final class OfflineEngine: ASREngine {
                 if !text.isEmpty, text != last { last = text; partial(text) }
             }
             for await frame in audio {
+                try Task.checkCancellation()
                 frame.withUnsafeBytes { pcm.append(contentsOf: $0) }
                 if pcm.count >= 3200 { try await flush() } // 100ms，引擎按此粒度处理
             }
             if !pcm.isEmpty { try await flush() }
-            return try await w.call("end")
+            let result = try await w.call("end")
+            if dedicatedWorker { await w.shutdown() }
+            return result
         } catch {
-            _ = try? await w.call("cancel")
+            if dedicatedWorker { await w.shutdown() }
+            else { _ = try? await w.call("cancel") }
             throw error
         }
     }
