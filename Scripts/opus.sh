@@ -17,6 +17,12 @@ LIBS=()
 for ARCH in arm64 x86_64; do
     SRC="$WORK/$ARCH"
     cp -R "$WORK/opus-$VER" "$SRC"
+    # GitHub runners can extract archive members in an order that makes these inputs
+    # appear newer than generated files; keep generated files newest to avoid autoreconf.
+    (cd "$SRC" \
+        && find . -name '*.am' -exec touch {} + \
+        && touch configure.ac aclocal.m4 \
+        && touch configure Makefile.in config.h.in)
     (cd "$SRC" && CFLAGS="-O2 -arch $ARCH -mmacosx-version-min=15.0" ./configure -q \
         --host="${ARCH/arm64/aarch64}-apple-darwin" --enable-static --disable-shared \
         --disable-doc --disable-extra-programs && make -s -j"$(sysctl -n hw.ncpu)")
