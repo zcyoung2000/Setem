@@ -430,9 +430,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         let settings = NSMenuItem(title: "设置", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
-        if #available(macOS 27.0, *) {
-            settings.preferredImageVisibility = .hidden
-        }
         menu.addItem(settings)
         menu.addItem(NSMenuItem(title: "退出", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
     }
