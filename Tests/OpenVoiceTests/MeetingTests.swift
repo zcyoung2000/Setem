@@ -65,15 +65,15 @@ final class MeetingTests: XCTestCase {
                 return "段落 \(markers.first ?? 0)"
             }
         }, onUpdate: { _ in })
-        for i in 0..<1957 { try await pipeline.append(frame(Int16(8000 + i))) }
+        for i in 0..<6500 { try await pipeline.append(frame(Int16(8000 + i))) }
         try await pipeline.finishCapture()
         try await eventually { await pipeline.snapshot().segments.allSatisfy { $0.state == .complete } }
         let record = await pipeline.snapshot()
-        XCTAssertEqual(record.frameCount, 1957)
-        XCTAssertEqual(record.segments.map(\.startFrame), [0, 900, 1800])
-        XCTAssertEqual(record.segments.map(\.endFrame), [900, 1800, 1957])
+        XCTAssertEqual(record.frameCount, 6500)
+        XCTAssertEqual(record.segments.map(\.startFrame), [0, 3000, 6000])
+        XCTAssertEqual(record.segments.map(\.endFrame), [3000, 6000, 6500])
         let recorded = probe.values.flatMap(\.1).sorted()
-        XCTAssertEqual(recorded, (0..<1957).map { Int16(8000 + $0) })
+        XCTAssertEqual(recorded, (0..<6500).map { Int16(8000 + $0) })
         try await pipeline.suspend()
     }
 
@@ -204,7 +204,7 @@ final class MeetingTests: XCTestCase {
         for _ in 0..<399 { XCTAssertFalse(segmenter.push(level: 0)) }
         XCTAssertTrue(segmenter.push(level: 0))
         segmenter.reset()
-        for _ in 0..<899 { XCTAssertFalse(segmenter.push(level: 0.7)) }
+        for _ in 0..<2999 { XCTAssertFalse(segmenter.push(level: 0.7)) }
         XCTAssertTrue(segmenter.push(level: 0.7))
     }
 
@@ -235,16 +235,16 @@ final class MeetingTests: XCTestCase {
                 return "第 \(markers.first ?? 0) 段"
             }
         }, onUpdate: { _ in })
-        for i in 0..<4513 { try await pipeline.append(frame(Int16(8000 + i))) }
+        for i in 0..<15013 { try await pipeline.append(frame(Int16(8000 + i))) }
         try await pipeline.finishCapture()
         try await eventually { await gate.arrivals == 3 }
         let busy = await pipeline.snapshot()
-        XCTAssertEqual(busy.frameCount, 4513)
+        XCTAssertEqual(busy.frameCount, 15013)
         XCTAssertEqual(busy.segments.count, 6)
         XCTAssertEqual(busy.segments.filter { $0.state == .queued }.count, 3)
         await gate.release()
         try await eventually { await pipeline.snapshot().segments.allSatisfy { $0.state == .complete } }
-        XCTAssertEqual(probe.values.flatMap(\.1).sorted(), (0..<4513).map { Int16(8000 + $0) })
+        XCTAssertEqual(probe.values.flatMap(\.1).sorted(), (0..<15013).map { Int16(8000 + $0) })
         try await pipeline.suspend()
     }
 
@@ -257,7 +257,7 @@ final class MeetingTests: XCTestCase {
                 return "本地识别内容"
             }
         }, onUpdate: { _ in })
-        for _ in 0..<1810 { try await pipeline.append(frame()) }
+        for _ in 0..<6010 { try await pipeline.append(frame()) }
         try await pipeline.finishCapture()
         try await Task.sleep(for: .milliseconds(150))
         let slots = await gate.arrivals

@@ -85,7 +85,7 @@ actor MeetingPipeline {
     private var pendingUIUpdate: Task<Void, Never>?
 
     init(archive: MeetingArchive, record: MeetingRecord = MeetingRecord(startedAt: Date()),
-         channels: [Channel], attemptTimeout: TimeInterval = 55,
+         channels: [Channel], attemptTimeout: TimeInterval = 85,
          factory: @escaping EngineFactory = MeetingPipeline.makeEngine,
          onUpdate: @escaping (MeetingRecord) -> Void) throws {
         guard let first = channels.first else { throw ASRError("没有可用的会议转写渠道") }

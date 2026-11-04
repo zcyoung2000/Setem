@@ -153,12 +153,12 @@ final class MeetingArchive {
     }
 }
 
-/// Prefer a pause after 8 seconds; hard-cap at 18 seconds for input-method ASR session limits.
+/// Prefer a pause after 8 seconds; hard-cap at 60 seconds (1 minute).
 /// Every frame belongs to exactly one segment, including silence and the final short tail.
 struct MeetingSegmenter {
-    static let minimumFrames = 400     // 8 秒（原 5 秒 / 250 帧）
-    static let pauseFrames = 40        // 0.8 秒停顿静音（原 0.5 秒 / 25 帧）
-    static let maximumFrames = 900     // 18 秒硬上限
+    static let minimumFrames = 400     // 8 秒
+    static let pauseFrames = 50        // 1 秒停顿静音（原 0.8 秒 / 40 帧）
+    static let maximumFrames = 3000    // 1 分钟硬上限（原 18 秒 / 900 帧）
     private(set) var count = 0
     private var quietFrames = 0
 
