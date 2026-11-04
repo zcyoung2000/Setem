@@ -261,6 +261,23 @@ struct SettingsView: View {
     @State private var confirmOfflineDownload = false
     @State private var channelBeforeOffline = Channel.doubao.rawValue
 
+    private var shortcutFooter: String {
+        var text = streaming
+            ? "在任意输入框中长按快捷键说话，识别结果实时打到光标处，松开后按定稿修正。"
+            : "在任意输入框中长按快捷键说话，松开后识别结果粘贴到光标处。"
+        text += "\n长按 \(Hotkey(rawValue: sendHotkey)?.title ?? Hotkey.rightControl.title) 说话，定稿上屏后自动回车发送；渠道为「全部」时自动采用第一个非空定稿。"
+        if tapShortcut != "off" {
+            text += "\n或点按一下点按快捷键开始聆听，停顿 \(String(format: "%g", silence)) 秒自动结束，再点一下可提前结束。"
+        }
+        if meetingShortcut != "off" {
+            text += "\n会议快捷键开始持续收录麦克风和电脑声音，再按展开或收起。可拖动悬浮窗、暂停或恢复；渠道失败自动回退，音频和文字保存在本机。"
+        }
+        if channel == Channel.all.rawValue {
+            text += "\n说完后在输入框上方列出各渠道结果，点击或 ↑↓ 回车上屏。"
+        }
+        return text
+    }
+
     var body: some View {
         Form {
             Section("识别渠道") {
@@ -343,12 +360,7 @@ struct SettingsView: View {
             } header: {
                 Text("快捷键与输入")
             } footer: {
-                Text((streaming ? "在任意输入框中长按快捷键说话，识别结果实时打到光标处，松开后按定稿修正。"
-                                : "在任意输入框中长按快捷键说话，松开后识别结果粘贴到光标处。")
-                     + "\n长按 \(Hotkey(rawValue: sendHotkey)?.title ?? Hotkey.rightControl.title) 说话，定稿上屏后自动回车发送；渠道为「全部」时自动采用第一个非空定稿。"
-                     + (tapShortcut == "off" ? "" : "\n或点按一下点按快捷键开始聆听，停顿 \(String(format: "%g", silence)) 秒自动结束，再点一下可提前结束。")
-                     + (meetingShortcut == "off" ? "" : "\n会议快捷键开始持续收录麦克风和电脑声音，再按展开或收起。可拖动悬浮窗、暂停或恢复；渠道失败自动回退，音频和文字保存在本机。")
-                     + (channel == Channel.all.rawValue ? "\n说完后在输入框上方列出各渠道结果，点击或 ↑↓ 回车上屏。" : ""))
+                Text(shortcutFooter)
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("权限") {
