@@ -201,7 +201,7 @@ final class MeetingTests: XCTestCase {
 
     func testSilenceCutsSegmentsButDoesNotTerminateMeeting() {
         var segmenter = MeetingSegmenter()
-        for _ in 0..<249 { XCTAssertFalse(segmenter.push(level: 0)) }
+        for _ in 0..<399 { XCTAssertFalse(segmenter.push(level: 0)) }
         XCTAssertTrue(segmenter.push(level: 0))
         segmenter.reset()
         for _ in 0..<899 { XCTAssertFalse(segmenter.push(level: 0.7)) }
