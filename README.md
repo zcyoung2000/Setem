@@ -13,6 +13,8 @@
 - **边说边上屏**：识别中的文字实时打到光标处，结束后按定稿修正；关闭后改为结束时一次性粘贴
 - **麦克风选择**：可指定输入设备，设备断开时自动回落到系统默认
 - **声波浮层**：屏幕底部显示随音量起伏的声波
+- **会议转写**：⌘⇧M 开始，持续收录麦克风和电脑播放的声音；可拖动的动态声波悬浮窗，点击展开转写、停止、复制与导出
+- **会议自动回退**：优先当前渠道，失败、空结果或超时后用原音频切换备用渠道；全部失败的片段保留待补转，可恢复上次会议
 
 ## 安装
 
@@ -40,6 +42,22 @@ xattr -dr com.apple.quarantine /Applications/OpenVoice.app
 | 长按并发送 | 右 ⌃ |
 | 静音自动结束 | 1.5 秒 |
 | 边说边上屏 | 开 |
+| 会议转写快捷键 | ⌘⇧M（可自定义） |
+
+### 会议转写
+
+1. 按 **⌘⇧M**，或菜单栏选择「开始会议转写」。首次使用需允许麦克风及「屏幕与系统音频录制」权限；系统音频用于收录线上会议对方的声音，不会保存屏幕画面。使用耳机可避免扬声器的声音被麦克风再次收录。
+2. 悬浮窗显示收音动画和已录时长；**拖动顶部移动**，**点击顶部展开/收起**，再按快捷键也可展开/收起。收起、静音或切换应用都不会结束会议。
+3. 展开后可查看带时间戳的转写。「暂停转写」停止收音并处理已录尾音，原位置切换成「恢复转写」；恢复后继续同一场会议，累计录音时长不包含暂停时间，导出文本中会记录暂停和恢复的时间。「退出」结束会议、保存未完成片段并关闭窗口。会议文字只出现在窗口中，不会打进当前输入框。
+4. 可复制文字、导出 Markdown 或暂停后导出 WAV。菜单栏「打开会议记录」可查看历次记录，「恢复上次会议 / 补转」从本地音频恢复未完成片段。
+
+会议悬浮窗使用浅色界面，展开/收起采用 0.32 秒缓动与淡入淡出；系统启用「减少动态效果」时直接切换。声波音量单独刷新，文字列表不随音量重排；已排版的内容在窗口动画期间保持固定尺寸。暂停时声波动画停止，恢复时继续。
+
+会议优先使用当前识别渠道，失败时依次尝试其他可用渠道，已安装的本地离线模型也参与回退。「全部」在会议模式中使用自动回退，无需手动选结果。未完成片段每 30 秒自动重试，也可点击「立即重试」。
+
+音频先写入 `~/Library/Application Support/OpenVoice/Meetings/<会议编号>/audio.pcm`，再提交给识别渠道。录音按连续的 5–18 秒片段接续，切片和重试期间持续收音，备用渠道从片段开头重放；临时文字按片段替换，定稿不会重复追加。最多并行处理三段，离线模型仅占用一个识别槽位。原始格式为 16kHz、单声道、16-bit little-endian PCM（约 115 MB/小时）；`session.json` 保存片段进度，`transcript.md` 保存可直接阅读的文字，未定稿段会标注「待补转」。记录由用户自行清理。
+
+原音频保留用于故障补转，识别准确率仍受收音条件和渠道质量影响，不能保证逐字无误。收音权限、设备异常或磁盘写入失败会明确报错；电脑睡眠时会暂停录音，唤醒后点击「恢复转写」。
 
 **离线识别**：首次选择「离线」渠道时会先询问是否下载引擎库（约 8MB，来自上游 [offline-libs](https://github.com/J3n5en/voicekey/releases/tag/offline-libs) Release）和模型（约 177MB，来自字节 CDN），保存在 `~/Library/Application Support/OpenVoice/offline/`。之后断网也能用；识别时会在后台进程中占用约 1GB 内存，空闲 5 分钟后自动释放，也可随时在设置中删除。
 
@@ -57,6 +75,9 @@ xattr -dr com.apple.quarantine /Applications/OpenVoice.app
 - `VERSION` / `BUILD` 环境变量设置版本号
 - 打包 DMG：`./Scripts/dmg.sh build/OpenVoice.dmg`（窗口布局与背景见 `Scripts/dmg/`）
 - 调试识别链路：`build/OpenVoice.app/Contents/MacOS/OpenVoice --test doubao|wetype file.wav`
+- 渲染会议窗口预览（不收音、不联网）：`build/OpenVoice.app/Contents/MacOS/OpenVoice --preview-meeting /tmp/openvoice-meeting-preview`
+- 窗口性能测试（1000 段模拟记录、持续音量/文字更新和连续展开/收起）：`build/OpenVoice.app/Contents/MacOS/OpenVoice --preview-meeting /tmp/openvoice-meeting-benchmark --benchmark`
+- 会议录音分片、回退、恢复和混音测试：`swift test`
 
 ## 发布
 
@@ -75,6 +96,9 @@ git tag v0.2.0 && git push origin v0.2.0
 | `Offline.swift` | 离线：资源下载与校验、识别子进程管理 |
 | `CHanbao/` | 在 macOS 进程内加载安卓 ELF 引擎库（ELF 加载器 + bionic 兼容层） |
 | `Audio.swift` | AudioQueue 采集 16kHz 单声道、音量计算、设备枚举 |
+| `MeetingRecorder.swift` | ScreenCaptureKit 电脑声音与麦克风收音，按时间戳混音 |
+| `MeetingArchive.swift` / `MeetingPipeline.swift` | 会议音频持久化、连续分片、渠道回退和断点补转 |
+| `MeetingSession.swift` / `MeetingPanel.swift` | 会议生命周期、可拖动悬浮窗与导出 |
 | `System.swift` | 全局快捷键（CGEventTap）、上屏、HUD |
 | `Core.swift` | Opus 编码、protobuf 编解码、WebSocket 封装 |
 | `Scripts/icon.swift` | 将 `docs/icon.png` 生成各尺寸 App 图标 |

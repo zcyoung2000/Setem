@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import SwiftUI
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let hotkey = HotkeyMonitor()
     private let recorder = Recorder()
@@ -11,6 +12,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let wetype = WeTypeEngine()
     private let offline = OfflineEngine()
     private let qwen = QwenEngine()
+    private let meeting = MeetingSession()
+    private var meetingPanel: MeetingPanel?
+    private var sleepObserver: Any?
     private var statusItem: NSStatusItem!
     private var settingsWindow: NSWindow?
     private var session: Task<Void, Never>?
@@ -45,14 +49,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
+        meetingPanel = MeetingPanel(model: meeting)
+        meeting.onDismiss = { [weak self] in self?.meetingPanel?.hide() }
+        meeting.onCaptureChanged = { [weak self] in self?.setIcon(recording: self?.recording ?? false) }
+        meeting.canBeginCapture = { [weak self] in self?.session == nil && !HotkeyMonitor.paused }
+        // A sleeping Mac cannot record. Stop explicitly and retain every captured frame.
+        sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.meeting.interrupt("电脑即将睡眠，会议已暂停；唤醒后点击恢复转写。")
+            }
+        }
 
-        AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary)
+        requestInitialAccessibilityPermission()
         if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
             AVCaptureDevice.requestAccess(for: .audio) { _ in }
         }
 
         hotkey.onPress = { [weak self] in
             guard let self else { return }
+            guard !self.meeting.isCapturing else { return }
             if self.session != nil, !self.recording { self.abort(nil); return }
             guard self.session == nil else { return }
             if Channel.current == .all {
@@ -74,10 +89,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         hotkey.onTap = { [weak self] in
             guard let self else { return }
+            guard !self.meeting.isCapturing else { self.meetingPanel?.show(); return }
             if self.recording { self.end() }
             else if self.session != nil { self.abort(nil) }
             else { self.begin(autoStop: true, sendOnFinish: false) }
         }
+        hotkey.onMeeting = { [weak self] in self?.toggleMeeting() }
         hotkey.onEscape = { [weak self] in
             guard let self, self.session != nil else { return }
             self.abort(nil)
@@ -104,7 +121,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return false
     }
 
+    private func requestInitialAccessibilityPermission() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: "didPromptAccessibility") else { return }
+        // Existing installations have already been offered permission. An update must
+        // not repeat the system prompt when the stored authorization is still denied.
+        let configured = ["hotkey", "tapShortcut", "sendHotkey", "channel", "micUID", "meetingShortcut"]
+            .contains { defaults.object(forKey: $0) != nil }
+        defaults.set(true, forKey: "didPromptAccessibility")
+        guard !configured, !AXIsProcessTrusted() else { return }
+        AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary)
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        Task {
+            await meeting.prepareForTermination()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
     private func begin(autoStop: Bool = false, sendOnFinish: Bool = false) {
+        guard !meeting.isCapturing else { meetingPanel?.show(); return }
         guard session == nil else { return }
         if Channel.current == .all {
             beginPick(autoStop: autoStop, sendOnFinish: sendOnFinish)
@@ -387,7 +425,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func setIcon(recording: Bool) {
-        statusItem.button?.image = NSImage(systemSymbolName: recording ? "mic.fill" : "mic", accessibilityDescription: "OpenVoice")
+        statusItem.button?.image = NSImage(systemSymbolName: meeting.isCapturing ? "waveform.circle.fill" : recording ? "mic.fill" : "mic", accessibilityDescription: "OpenVoice")
     }
 
     /// Bundle ID and the app-support directory changed with the OpenVoice rename.
@@ -414,6 +452,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let sendHeader = NSMenuItem(title: "长按 \(Hotkey.sendHold.title) 说话并发送", action: nil, keyEquivalent: "")
         sendHeader.isEnabled = false
         menu.addItem(sendHeader)
+        menu.addItem(.separator())
+        let meetingItem = NSMenuItem(title: meeting.hasOpenMeeting ? "显示会议转写" : "开始会议转写", action: #selector(showMeeting), keyEquivalent: "")
+        meetingItem.target = self
+        menu.addItem(meetingItem)
+        if meeting.hasOpenMeeting {
+            let pause = NSMenuItem(title: meeting.phase == .paused ? "恢复会议转写" : "暂停会议转写", action: #selector(toggleMeetingPause), keyEquivalent: "")
+            pause.target = self
+            pause.isEnabled = meeting.phase == .recording || meeting.phase == .paused
+            menu.addItem(pause)
+        } else if MeetingSession.latestDirectory != nil {
+            let restore = NSMenuItem(title: "恢复上次会议 / 补转", action: #selector(restoreMeeting), keyEquivalent: "")
+            restore.target = self
+            menu.addItem(restore)
+        }
+        let records = NSMenuItem(title: "打开会议记录", action: #selector(openMeetingRecords), keyEquivalent: "")
+        records.target = self
+        menu.addItem(records)
         menu.addItem(.separator())
         for c in Channel.available {
             let item = NSMenuItem(title: c.title, action: #selector(selectChannel(_:)), keyEquivalent: "")
@@ -457,9 +512,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    private func toggleMeeting() {
+        if meeting.hasOpenMeeting {
+            meetingPanel?.toggle()
+            meetingPanel?.show()
+        } else { showMeeting() }
+    }
+
+    @objc private func showMeeting() {
+        guard !HotkeyMonitor.paused else {
+            fail("请先结束渠道对比或快捷键设置，再开始会议转写")
+            return
+        }
+        guard session == nil else {
+            fail("请先结束当前语音输入，再开始会议转写")
+            return
+        }
+        if !meeting.hasOpenMeeting { meeting.start() }
+        meetingPanel?.show()
+    }
+
+    @objc private func toggleMeetingPause() {
+        meeting.phase == .paused ? meeting.resume() : meeting.pause()
+        meetingPanel?.show()
+    }
+
+    @objc private func restoreMeeting() {
+        guard session == nil, !meeting.hasOpenMeeting else { return }
+        meeting.restoreLatest()
+        meetingPanel?.show()
+    }
+
+    @objc private func openMeetingRecords() {
+        do {
+            try FileManager.default.createDirectory(at: MeetingArchive.root, withIntermediateDirectories: true)
+            NSWorkspace.shared.open(MeetingArchive.root)
+        } catch { fail(error.localizedDescription) }
+    }
+
     @objc private func openSettings() {
         if settingsWindow == nil {
-            let window = NSWindow(contentViewController: NSHostingController(rootView: SettingsView()))
+            let window = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(meeting: meeting)))
             window.title = "OpenVoice 设置"
             window.styleMask = [.titled, .closable]
             window.isReleasedWhenClosed = false

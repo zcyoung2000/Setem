@@ -2,6 +2,8 @@ import Foundation
 
 /// 豆包输入法流式识别：asr.AsrRequest protobuf over WSS，Opus 20ms 帧
 final class DoubaoEngine: ASREngine {
+    private let requireFinalResult: Bool
+    init(requireFinalResult: Bool = false) { self.requireFinalResult = requireFinalResult }
     private static let wsURL = "wss://frontier-audio-ime-ws.doubao.com/ocean/api/v1/ws"
     /// Official client 1.4.6's built-in ASR key; settings-discovered keys are rejected on some devices.
     static let appKey = "OrnqKvSSrs"
@@ -22,8 +24,10 @@ final class DoubaoEngine: ASREngine {
         defer { keeper.cancel() }
 
         do {
-            return try await Self.session(live, partial: partial)
+            return try await Self.session(live, requireFinalResult: requireFinalResult, partial: partial)
         } catch let rejection as SessionRejected {
+            // Meeting mode owns the complete replay, including frames still being captured.
+            if requireFinalResult { throw rejection }
             DoubaoDevice.reset()
             let replay = AsyncStream<[Int16]> { cont in
                 Task {
@@ -32,7 +36,7 @@ final class DoubaoEngine: ASREngine {
                 }
             }
             do {
-                return try await Self.session(replay, partial: partial)
+                return try await Self.session(replay, requireFinalResult: false, partial: partial)
             } catch {
                 DoubaoDevice.reset()
                 throw ASRError("\(rejection.message)；换设备重试：\(error.localizedDescription)")
@@ -58,7 +62,7 @@ final class DoubaoEngine: ASREngine {
         }
     }
 
-    private static func session(_ audio: AsyncStream<[Int16]>, partial: @escaping (String) -> Void) async throws -> String {
+    private static func session(_ audio: AsyncStream<[Int16]>, requireFinalResult: Bool, partial: @escaping (String) -> Void) async throws -> String {
         let pacedAudio = withLeadingSilence(audio)
         let device = try await DoubaoDevice.load()
         let rid = UUID().uuidString.lowercased()
@@ -105,6 +109,7 @@ final class DoubaoEngine: ASREngine {
         do {
             try await receiver.value
         } catch {
+            if requireFinalResult { throw error }
             if transcript.result.isEmpty {
                 let message = error.localizedDescription
                 if message.contains("Failed") { throw SessionRejected(message: message) }

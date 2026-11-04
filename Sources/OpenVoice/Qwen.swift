@@ -6,6 +6,8 @@ import Network
 /// 千问输入法 ASR：独立 WSG（HMAC-SHA1 + AES-128-CBC），不依赖本机 IME。
 /// WSS：HTTP/1.1 101 后发 protobuf 二进制帧（attach → asr/send PCM → complete）。
 final class QwenEngine: ASREngine {
+    private let requireFinalResult: Bool
+    init(requireFinalResult: Bool = false) { self.requireFinalResult = requireFinalResult }
     static let ve = "1.2.35.46"
     static let origin = "https://www.qianwen.com"
     static let hmacKey = Data("2d473b000fdb53e617446f805d4eaaacbb324bd16ee9f6d8237abd0ab79c5e48".utf8)
@@ -88,6 +90,9 @@ final class QwenEngine: ASREngine {
             try await c.complete()
             for _ in 0..<8 where !transcript.isDone {
                 try await Task.sleep(for: .milliseconds(250))
+            }
+            if requireFinalResult, !transcript.isDone {
+                throw ASRError("千问未返回完整定稿，正在切换渠道补转")
             }
             c.reset()
             if transcript.result.isEmpty { throw ASRError("千问没有识别文本") }

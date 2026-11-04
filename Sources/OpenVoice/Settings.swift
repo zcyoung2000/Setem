@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import Combine
 import SwiftUI
 
 enum Channel: String, CaseIterable, Identifiable {
@@ -159,6 +160,10 @@ struct Shortcut: Equatable {
     }
 
     static let defaultRaw = Shortcut(keyCode: 54, modifiers: 0, name: "右 ⌘").raw
+    static let meetingDefaultRaw = Shortcut(keyCode: 46, modifiers: CGEventFlags([.maskCommand, .maskShift]).rawValue, name: "M").raw
+    static var meeting: Shortcut? {
+        Shortcut(raw: UserDefaults.standard.string(forKey: "meetingShortcut") ?? meetingDefaultRaw)
+    }
 
     /// "off" 表示关闭；按设置项分别缓存，事件回调里频繁读取
     private static var tapCache: (String, Shortcut?) = ("", nil)
@@ -173,6 +178,7 @@ struct Shortcut: Equatable {
 /// 录制下一次按键：单独按一个修饰键，或按下 修饰键+键；Esc 取消
 struct ShortcutField: View {
     var kind = "点按"
+    var allowsModifier = true
     @Binding var raw: String
     @State private var recording = false
     @State private var monitor: Any?
@@ -220,6 +226,7 @@ struct ShortcutField: View {
             return stop()
         }
         guard let flag = Shortcut.modifierFlag[code] else { return }
+        guard allowsModifier else { return }
         if cg.flags.contains(flag) {
             // 同时按了多个修饰键则不作为单键录入，等待后续组合键
             pendingModifier = pendingModifier == nil ? code : -1
@@ -234,9 +241,11 @@ struct ShortcutField: View {
 }
 
 struct SettingsView: View {
+    @ObservedObject var meeting: MeetingSession
     @AppStorage("channel") private var channel = Channel.doubao.rawValue
     @AppStorage("hotkey") private var hotkey = Hotkey.rightOption.rawValue
     @AppStorage("tapShortcut") private var tapShortcut = Shortcut.defaultRaw
+    @AppStorage("meetingShortcut") private var meetingShortcut = Shortcut.meetingDefaultRaw
     @AppStorage("sendHotkey") private var sendHotkey = Hotkey.rightControl.rawValue
     @AppStorage("silence") private var silence = 1.5
     @AppStorage("hudStyle") private var hudStyle = HUDStyle.compact.rawValue
@@ -259,6 +268,8 @@ struct SettingsView: View {
                     Text("当前渠道")
                     Spacer()
                     Button("对比") { showCompare = true }
+                        .disabled(meeting.isCapturing)
+                        .help(meeting.isCapturing ? "请先暂停会议录音，再测试识别渠道" : "对比识别渠道")
                         .buttonStyle(.plain)
                         .focusEffectDisabled()
                 }
@@ -296,6 +307,15 @@ struct SettingsView: View {
                 }
                 .onChange(of: hotkey) { _, _ in avoidSendHotkeyConflict() }
                 .onChange(of: tapShortcut) { _, _ in avoidSendHotkeyConflict() }
+                LabeledContent("会议快捷键") {
+                    ShortcutField(kind: "会议", allowsModifier: false, raw: $meetingShortcut)
+                }
+                .help("开始会议转写，再按展开或收起；暂停后可在悬浮窗中恢复。")
+                if let meeting = Shortcut(raw: meetingShortcut), let tap = Shortcut(raw: tapShortcut),
+                   meeting.keyCode == tap.keyCode, meeting.modifiers == tap.modifiers {
+                    Text("会议快捷键与点按快捷键冲突，请重新绑定。")
+                        .font(.caption).foregroundStyle(.red)
+                }
                 if hasHotkeyConflict(Hotkey(rawValue: sendHotkey) ?? .rightControl) {
                     Text("长按并发送快捷键与其他快捷键冲突，请重新绑定。")
                         .font(.caption)
@@ -327,6 +347,7 @@ struct SettingsView: View {
                                 : "在任意输入框中长按快捷键说话，松开后识别结果粘贴到光标处。")
                      + "\n长按 \(Hotkey(rawValue: sendHotkey)?.title ?? Hotkey.rightControl.title) 说话，定稿上屏后自动回车发送；渠道为「全部」时自动采用第一个非空定稿。"
                      + (tapShortcut == "off" ? "" : "\n或点按一下点按快捷键开始聆听，停顿 \(String(format: "%g", silence)) 秒自动结束，再点一下可提前结束。")
+                     + (meetingShortcut == "off" ? "" : "\n会议快捷键开始持续收录麦克风和电脑声音，再按展开或收起。可拖动悬浮窗、暂停或恢复；渠道失败自动回退，音频和文字保存在本机。")
                      + (channel == Channel.all.rawValue ? "\n说完后在输入框上方列出各渠道结果，点击或 ↑↓ 回车上屏。" : ""))
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -348,8 +369,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 420)
-        .fixedSize()
+        .frame(width: 460, height: min(900, (NSScreen.main?.visibleFrame.height ?? 1000) - 100))
         .onReceive(timer) { _ in
             axTrusted = AXIsProcessTrusted()
             micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
