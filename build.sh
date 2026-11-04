@@ -13,6 +13,9 @@ PLATFORM_LINK_FLAGS=(
     -Xlinker -platform_version -Xlinker macos
     -Xlinker "$MACOS_MIN" -Xlinker "$SDK_VERSION"
 )
+# GitHub's Xcode 26 linker rejects -platform_version when SwiftPM invokes it.
+# SwiftPM still links against the selected SDK without these local-only flags.
+[[ -z "${CI:-}" ]] || PLATFORM_LINK_FLAGS=()
 
 # 通用包：Apple 芯片与 Intel 共用一个 App
 xcrun swift build -c release --arch arm64 --arch x86_64 "${PLATFORM_LINK_FLAGS[@]}"
