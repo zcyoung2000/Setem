@@ -290,7 +290,7 @@ private struct HUDView: View {
 }
 
 /// Liquid Glass is only available on macOS 26 and later; retain the old material on macOS 15.
-private struct LiquidGlassBackground<ShapeType: Shape>: ViewModifier {
+struct LiquidGlassBackground<ShapeType: Shape>: ViewModifier {
     let shape: ShapeType
     let interactive: Bool
 
@@ -351,7 +351,7 @@ private struct LiquidGlassBackground<ShapeType: Shape>: ViewModifier {
     }
 }
 
-private extension View {
+extension View {
     func liquidGlassBackground<ShapeType: Shape>(
         in shape: ShapeType,
         interactive: Bool = false
