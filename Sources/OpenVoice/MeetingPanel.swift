@@ -431,7 +431,7 @@ struct MeetingPanelView: View {
                                 Text(model.isCapturing ? "让想法流动，让文字留下。" : "本次会议没有录入音频")
                                     .font(.system(size: 13, weight: .medium))
                                     .foregroundStyle(Color.primary.opacity(0.75))
-                                Text(model.phase == .paused ? "点击恢复，继续本场会议" : "收起窗口仍会持续录音与转写")
+                                Text(model.phase == .paused ? (model.record.captureEnded == true ? "点击继续转写，继续本场会议" : "点击恢复，继续本场会议") : "收起窗口仍会持续录音与转写")
                                     .font(.system(size: 11))
                                     .foregroundStyle(Color.secondary)
                             }
@@ -531,7 +531,7 @@ struct MeetingPanelView: View {
                         model.phase == .paused ? model.resume() : model.pause()
                     } label: {
                         Label(
-                            model.phase == .paused ? "恢复转写" : model.phase == .pausing ? "正在暂停…" : model.phase == .starting ? "准备收音…" : "暂停转写",
+                            model.phase == .paused ? (model.record.captureEnded == true ? "继续转写" : "恢复转写") : model.phase == .pausing ? "正在暂停…" : model.phase == .starting ? "准备收音…" : "暂停转写",
                             systemImage: model.phase == .paused ? "play.fill" : "pause.fill"
                         )
                         .font(.system(size: 12, weight: .semibold))

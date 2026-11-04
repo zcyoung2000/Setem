@@ -158,10 +158,13 @@ actor MeetingPipeline {
     }
 
     func resumeCapture(at date: Date = Date()) throws {
-        guard !suspended, !record.captureEnded, record.capturePaused == true else { throw ASRError("当前会议无法恢复收音") }
+        guard !suspended else { throw ASRError("当前会议无法恢复收音") }
+        record.captureEnded = false
         record.capturePaused = false
         record.captureError = ""
-        if let i = record.pauses?.indices.last { record.pauses?[i].endedAt = date }
+        if let i = record.pauses?.indices.last, record.pauses?[i].endedAt == nil {
+            record.pauses?[i].endedAt = date
+        }
         try checkpoint()
     }
 

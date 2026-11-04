@@ -457,7 +457,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         meetingItem.target = self
         menu.addItem(meetingItem)
         if meeting.hasOpenMeeting {
-            let pause = NSMenuItem(title: meeting.phase == .paused ? "恢复会议转写" : "暂停会议转写", action: #selector(toggleMeetingPause), keyEquivalent: "")
+            let pauseTitle = meeting.phase == .paused ? (meeting.record.captureEnded == true ? "继续会议转写" : "恢复会议转写") : "暂停会议转写"
+            let pause = NSMenuItem(title: pauseTitle, action: #selector(toggleMeetingPause), keyEquivalent: "")
             pause.target = self
             pause.isEnabled = meeting.phase == .recording || meeting.phase == .paused
             menu.addItem(pause)

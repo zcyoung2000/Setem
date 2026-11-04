@@ -175,4 +175,42 @@ final class MeetingSessionTests: XCTestCase {
         let archive = try MeetingArchive(directory: XCTUnwrap(model.directory))
         XCTAssertTrue(try archive.recover().captureEnded)
     }
+
+    func testRestoreLatestAllowsResumingMeeting() async throws {
+        var sources: [SimulatedCapture] = []
+        let root = try directory()
+        let model1 = MeetingSession(captureFactory: {
+            let source = SimulatedCapture(); sources.append(source); return source
+        }, archiveRoot: root, engineFactory: { _ in SessionTestEngine() }, channels: { [.wetype] })
+        model1.start()
+        try await eventually { model1.phase == .recording }
+        sources[0].send(7777)
+        model1.pause()
+        try await eventually { model1.phase == .paused }
+        let sessionDir = try XCTUnwrap(model1.directory)
+        model1.exit()
+        await model1.prepareForTermination()
+        XCTAssertEqual(model1.phase, .stopped)
+
+        // Restore in a second model instance
+        let model2 = MeetingSession(captureFactory: {
+            let source = SimulatedCapture(); sources.append(source); return source
+        }, archiveRoot: root, engineFactory: { _ in SessionTestEngine() }, channels: { [.wetype] })
+        model2.restoreLatest(from: sessionDir)
+        try await eventually { model2.phase == .paused }
+        XCTAssertTrue(model2.hasOpenMeeting)
+        XCTAssertEqual(model2.record.captureEnded, true)
+        XCTAssertEqual(model2.record.frameCount, 1)
+
+        // Resume capturing into the restored session
+        model2.resume()
+        try await eventually { model2.phase == .recording }
+        XCTAssertEqual(sources.count, 2)
+        sources[1].send(8888)
+        model2.pause()
+        try await eventually { model2.phase == .paused }
+        XCTAssertEqual(model2.record.frameCount, 2)
+        XCTAssertEqual(model2.record.captureEnded, false)
+        await model2.prepareForTermination()
+    }
 }

@@ -77,7 +77,7 @@ final class MeetingSession: ObservableObject {
         case .restoring: return "正在恢复会议"
         case .recording: return record.segments.contains(where: { $0.state == .pending }) ? "持续录音 · 等待补转" : "正在聆听"
         case .pausing: return "正在保存尾音"
-        case .paused: return "已暂停 · 未在收音"
+        case .paused: return record.captureEnded == true ? "已载入 · 点击继续转写" : "已暂停 · 未在收音"
         case .stopping: return "正在保存会议"
         case .stopped: return pendingCount > 0 ? "会议已结束 · 正在补转" : "会议已结束"
         }
@@ -247,8 +247,8 @@ final class MeetingSession: ObservableObject {
         return task
     }
 
-    func restoreLatest() {
-        guard !hasOpenMeeting, let url = Self.latestDirectory else { return }
+    func restoreLatest(from customURL: URL? = nil) {
+        guard !hasOpenMeeting, let url = customURL ?? Self.latestDirectory else { return }
         let previous = pipeline
         retryTimer?.cancel()
         generation = UUID()
@@ -272,7 +272,7 @@ final class MeetingSession: ObservableObject {
                 startRetryTimer()
                 await pipeline?.retryPending(force: true)
             } catch { notice = "恢复失败：\(error.localizedDescription)" }
-            phase = .stopped
+            phase = self.pipeline != nil ? .paused : .stopped
             onCaptureChanged()
         }
     }
