@@ -29,6 +29,18 @@ enum Hotkey: String, CaseIterable, Identifiable {
     case rightOption, rightCommand, rightControl, fn
     var id: String { rawValue }
     static var current: Hotkey { Hotkey(rawValue: UserDefaults.standard.string(forKey: "hotkey") ?? "") ?? .rightOption }
+    static var sendHold: Hotkey {
+        if let value = UserDefaults.standard.string(forKey: "sendHotkey"),
+           let hotkey = Hotkey(rawValue: value) { return hotkey }
+
+        // Migrate the short-lived recorder-based setting used by 0.6.0 local builds.
+        if let raw = UserDefaults.standard.string(forKey: "sendHoldShortcut"),
+           let shortcut = Shortcut(raw: raw),
+           let hotkey = Hotkey.allCases.first(where: { $0.keyCode == shortcut.keyCode }) {
+            return hotkey
+        }
+        return .rightControl
+    }
     /// 点按模式下静音多久自动结束
     static var silence: Double { UserDefaults.standard.object(forKey: "silence") as? Double ?? 1.5 }
 
@@ -148,8 +160,6 @@ struct Shortcut: Equatable {
 
     static let defaultRaw = Shortcut(keyCode: 54, modifiers: 0, name: "右 ⌘").raw
 
-    static let sendHoldDefaultRaw = Shortcut(keyCode: 62, modifiers: 0, name: "右 ⌃").raw
-
     /// "off" 表示关闭；按设置项分别缓存，事件回调里频繁读取
     private static var tapCache: (String, Shortcut?) = ("", nil)
     static var tap: Shortcut? {
@@ -158,12 +168,6 @@ struct Shortcut: Equatable {
         return tapCache.1
     }
 
-    private static var sendHoldCache: (String, Shortcut?) = ("", nil)
-    static var sendHold: Shortcut? {
-        let raw = UserDefaults.standard.string(forKey: "sendHoldShortcut") ?? sendHoldDefaultRaw
-        if sendHoldCache.0 != raw { sendHoldCache = (raw, Shortcut(raw: raw)) }
-        return sendHoldCache.1
-    }
 }
 
 /// 录制下一次按键：单独按一个修饰键，或按下 修饰键+键；Esc 取消
@@ -233,7 +237,7 @@ struct SettingsView: View {
     @AppStorage("channel") private var channel = Channel.doubao.rawValue
     @AppStorage("hotkey") private var hotkey = Hotkey.rightOption.rawValue
     @AppStorage("tapShortcut") private var tapShortcut = Shortcut.defaultRaw
-    @AppStorage("sendHoldShortcut") private var sendHoldShortcut = Shortcut.sendHoldDefaultRaw
+    @AppStorage("sendHotkey") private var sendHotkey = Hotkey.rightControl.rawValue
     @AppStorage("silence") private var silence = 1.5
     @AppStorage("hudStyle") private var hudStyle = HUDStyle.compact.rawValue
     @AppStorage("streaming") private var streaming = true
@@ -284,10 +288,15 @@ struct SettingsView: View {
                     }
                 }
                 LabeledContent("点按快捷键") { ShortcutField(raw: $tapShortcut) }
-                LabeledContent("长按并发送") {
-                    ShortcutField(kind: "长按并发送", raw: $sendHoldShortcut)
+                Picker("长按并发送", selection: $sendHotkey) {
+                    ForEach(Hotkey.allCases) { hotkey in
+                        HotkeyMenuItem(hotkey: hotkey)
+                            .tag(hotkey.rawValue)
+                    }
                 }
-                if let sendHold = Shortcut(raw: sendHoldShortcut), hasShortcutConflict(sendHold) {
+                .onChange(of: hotkey) { _, _ in avoidSendHotkeyConflict() }
+                .onChange(of: tapShortcut) { _, _ in avoidSendHotkeyConflict() }
+                if hasHotkeyConflict(Hotkey(rawValue: sendHotkey) ?? .rightControl) {
                     Text("长按并发送快捷键与其他快捷键冲突，请重新绑定。")
                         .font(.caption)
                         .foregroundStyle(.red)
@@ -316,7 +325,7 @@ struct SettingsView: View {
             } footer: {
                 Text((streaming ? "在任意输入框中长按快捷键说话，识别结果实时打到光标处，松开后按定稿修正。"
                                 : "在任意输入框中长按快捷键说话，松开后识别结果粘贴到光标处。")
-                     + (Shortcut(raw: sendHoldShortcut).map { "\n长按 \($0.title) 说话，定稿上屏后自动回车发送；渠道为「全部」时自动采用第一个非空定稿。" } ?? "")
+                     + "\n长按 \(Hotkey(rawValue: sendHotkey)?.title ?? Hotkey.rightControl.title) 说话，定稿上屏后自动回车发送；渠道为「全部」时自动采用第一个非空定稿。"
                      + (tapShortcut == "off" ? "" : "\n或点按一下点按快捷键开始聆听，停顿 \(String(format: "%g", silence)) 秒自动结束，再点一下可提前结束。")
                      + (channel == Channel.all.rawValue ? "\n说完后在输入框上方列出各渠道结果，点击或 ↑↓ 回车上屏。" : ""))
                     .font(.caption).foregroundStyle(.secondary)
@@ -367,10 +376,17 @@ struct SettingsView: View {
         }
     }
 
-    private func hasShortcutConflict(_ shortcut: Shortcut) -> Bool {
-        if shortcut.isModifier, let primary = Hotkey(rawValue: hotkey), shortcut.keyCode == primary.keyCode { return true }
-        guard let tap = Shortcut.tap else { return false }
-        return shortcut.keyCode == tap.keyCode && shortcut.modifiers == tap.modifiers
+    private func hasHotkeyConflict(_ sendHold: Hotkey) -> Bool {
+        if let primary = Hotkey(rawValue: hotkey), sendHold.keyCode == primary.keyCode { return true }
+        if let tap = Shortcut(raw: tapShortcut), tap.isModifier, sendHold.keyCode == tap.keyCode { return true }
+        return false
+    }
+
+    private func avoidSendHotkeyConflict() {
+        let current = Hotkey(rawValue: sendHotkey) ?? .rightControl
+        guard hasHotkeyConflict(current),
+              let replacement = Hotkey.allCases.first(where: { !hasHotkeyConflict($0) }) else { return }
+        sendHotkey = replacement.rawValue
     }
 
     private func openPrivacy(_ anchor: String) {

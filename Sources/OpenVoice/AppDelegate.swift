@@ -411,11 +411,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let header = NSMenuItem(title: "长按 \(Hotkey.current.title) 说话", action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
-        if let sendHold = Shortcut.sendHold {
-            let sendHeader = NSMenuItem(title: "长按 \(sendHold.title) 说话并发送", action: nil, keyEquivalent: "")
-            sendHeader.isEnabled = false
-            menu.addItem(sendHeader)
-        }
+        let sendHeader = NSMenuItem(title: "长按 \(Hotkey.sendHold.title) 说话并发送", action: nil, keyEquivalent: "")
+        sendHeader.isEnabled = false
+        menu.addItem(sendHeader)
         menu.addItem(.separator())
         for c in Channel.available {
             let item = NSMenuItem(title: c.title, action: #selector(selectChannel(_:)), keyEquivalent: "")

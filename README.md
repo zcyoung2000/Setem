@@ -44,7 +44,7 @@ xattr -dr com.apple.quarantine /Applications/OpenVoice.app
 **离线识别**：首次选择「离线」渠道时会先询问是否下载引擎库（约 8MB，来自上游 [offline-libs](https://github.com/J3n5en/voicekey/releases/tag/offline-libs) Release）和模型（约 177MB，来自字节 CDN），保存在 `~/Library/Application Support/OpenVoice/offline/`。之后断网也能用；识别时会在后台进程中占用约 1GB 内存，空闲 5 分钟后自动释放，也可随时在设置中删除。
 
 单个修饰键可同时作为长按键和点按键：快速点一下为点按，按住超过 0.3 秒为长按。设为组合键的点按快捷键会被 OpenVoice 拦截，不再传给前台应用。
-长按并发送是独立可录制快捷键，支持单个修饰键或组合键；请避免与长按、点按快捷键冲突。识别渠道为「全部」时不会弹出选择浮层，会直接发送第一个返回的非空定稿。
+长按并发送与长按快捷键一样通过选择器选择；如果与长按或点按快捷键冲突，会自动换到可用按键。识别渠道为「全部」时不会弹出选择浮层，会直接发送第一个返回的非空定稿。
 
 ## 从源码构建
 

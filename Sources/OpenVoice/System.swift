@@ -17,7 +17,6 @@ final class HotkeyMonitor {
     private var tap: CFMachPort?
     private var downCode: Int64?
     private var swallowedCode: Int64?
-    private var sendSwallowedCode: Int64?
     private var pressedAt = Date.distantPast
     private var cancelled = false
     private var active = false
@@ -67,19 +66,11 @@ final class HotkeyMonitor {
         }
         guard !Self.paused else { return false }
         let shortcut = Shortcut.tap
-        let sendHold = Shortcut.sendHold
+        let sendHold = Hotkey.sendHold
         switch type {
         case .keyDown:
             if code == 53, event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
                 onEscape()
-            }
-            if let s = sendHold, !s.isModifier, code == s.keyCode,
-               event.flags.intersection(Shortcut.mask).rawValue == s.modifiers {
-                if event.getIntegerValueField(.keyboardEventAutorepeat) == 0, sendSwallowedCode == nil {
-                    sendSwallowedCode = code
-                    beginPendingHold(.send)
-                }
-                return true
             }
             if let s = shortcut, !s.isModifier, code == s.keyCode,
                event.flags.intersection(Shortcut.mask).rawValue == s.modifiers {
@@ -89,28 +80,13 @@ final class HotkeyMonitor {
             }
             if downCode != nil, !active { cancelPending() }
         case .keyUp:
-            if code == sendSwallowedCode {
-                sendSwallowedCode = nil
-                if active, holdKind == .send {
-                    active = false
-                    holdKind = nil
-                    onRelease(true)
-                } else {
-                    cancelPending()
-                }
-                return true
-            }
             if code == swallowedCode {
                 swallowedCode = nil
                 return true
             }
         case .flagsChanged:
-            if sendSwallowedCode != nil, !active, let s = sendHold,
-               event.flags.intersection(Shortcut.mask).rawValue != s.modifiers {
-                cancelPending()
-            }
             let hold = Hotkey.current
-            let sendCode = sendHold.flatMap { $0.isModifier ? $0.keyCode : nil }
+            let sendCode = sendHold.keyCode
             let tapCode = shortcut.flatMap { $0.isModifier ? $0.keyCode : nil }
             guard code == downCode ?? code, code == hold.keyCode || code == sendCode || code == tapCode,
                   let flag = Shortcut.modifierFlag[code] else {
@@ -147,7 +123,7 @@ final class HotkeyMonitor {
         holdKind = kind
         timer = Timer.scheduledTimer(withTimeInterval: Self.threshold, repeats: false) { [weak self] _ in
             guard let self, !self.cancelled,
-                  kind == .send ? self.sendSwallowedCode != nil : self.downCode != nil else { return }
+                  self.downCode != nil else { return }
             self.active = true
             self.onLongPress(kind == .send)
         }
