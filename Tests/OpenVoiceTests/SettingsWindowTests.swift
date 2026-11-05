@@ -53,10 +53,8 @@ final class SettingsWindowTests: XCTestCase {
         try await settle(window)
         let sheet = try XCTUnwrap(window.attachedSheet)
         let content = try XCTUnwrap(sheet.contentView)
-        let control = try XCTUnwrap(
-            nativeViews(in: content).first { $0.acceptsFirstResponder }
-                ?? elements(in: content).compactMap { $0 as? NSView }.first { $0.acceptsFirstResponder }
-        )
+        let control = try XCTUnwrap(nativeViews(in: content).first { $0.acceptsFirstResponder }
+                                     ?? sheet.firstResponder as? NSView)
         XCTAssertTrue(sheet.makeFirstResponder(control))
         XCTAssertTrue(sheet.firstResponder === control)
         sheet.sendEvent(try keyEvent("\u{1B}", code: 53, in: sheet))
