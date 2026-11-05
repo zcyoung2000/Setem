@@ -9,8 +9,11 @@ struct ASRError: LocalizedError {
 
 /// 一次识别：消费 16kHz/mono/Int16 的 20ms 帧流，流结束即松手，返回最终文本
 protocol ASREngine: AnyObject {
+    func prepare() async
     func run(audio: AsyncStream<[Int16]>, partial: @escaping (String) -> Void) async throws -> String
 }
+
+extension ASREngine { func prepare() async {} }
 
 final class Opus {
     static let voip: Int32 = 2048
@@ -126,12 +129,12 @@ extension Array where Element == (field: Int, value: PBValue) {
 final class WebSocket {
     private let task: URLSessionWebSocketTask
 
-    init(request: URLRequest, protocols: [String] = []) {
+    init(request: URLRequest, protocols: [String] = [], session: URLSession = .shared) {
         var request = request
         if !protocols.isEmpty {
             request.setValue(protocols.joined(separator: ", "), forHTTPHeaderField: "Sec-WebSocket-Protocol")
         }
-        task = URLSession.shared.webSocketTask(with: request)
+        task = session.webSocketTask(with: request)
         task.resume()
     }
 
@@ -161,6 +164,9 @@ final class WebSocket {
     }
 
     func close() { task.cancel(with: .normalClosure, reason: nil) }
+
+    // URLSession retains running tasks after their wrapper is gone.
+    deinit { close() }
 }
 
 private enum AppSupport {

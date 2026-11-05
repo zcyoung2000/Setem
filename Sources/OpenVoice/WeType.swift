@@ -8,6 +8,8 @@ final class WeTypeEngine: ASREngine {
     private static let packetsPerRequest = 6
     private var client: WeTypeClient?
 
+    deinit { client?.close() }
+
     /// 握手约 400ms，连接留着给下次用；失效则首包失败时重连重发
     private func channel(fresh: Bool) async throws -> (WeTypeClient, reused: Bool) {
         if !fresh, let c = client, c.alive { return (c, true) }
@@ -18,9 +20,7 @@ final class WeTypeEngine: ASREngine {
         return (c, false)
     }
 
-    func prewarm() {
-        Task { _ = try? await channel(fresh: false) }
-    }
+    func prepare() async { _ = try? await channel(fresh: false) }
 
     func run(audio: AsyncStream<[Int16]>, partial: @escaping (String) -> Void) async throws -> String {
         let audio = withLeadingSilence(audio)

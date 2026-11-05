@@ -16,9 +16,9 @@ final class QwenEngine: ASREngine {
 
     private var client: Session?
 
-    func prewarm() {
-        Task { _ = try? await channel(fresh: false) }
-    }
+    deinit { client?.close() }
+
+    func prepare() async { _ = try? await channel(fresh: false) }
 
     private func channel(fresh: Bool) async throws -> (Session, reused: Bool) {
         if !fresh, let c = client, c.alive { return (c, true) }
@@ -94,12 +94,17 @@ final class QwenEngine: ASREngine {
             if requireFinalResult, !transcript.isDone {
                 throw ASRError("千问未返回完整定稿，正在切换渠道补转")
             }
+            receiver.cancel()
+            _ = try? await receiver.value
             c.reset()
             if transcript.result.isEmpty { throw ASRError("千问没有识别文本") }
             return transcript.result
         } catch {
             c.close()
+            receiver.cancel()
+            _ = try? await receiver.value
             if client === c { client = nil }
+            if !requireFinalResult, !Task.isCancelled, !transcript.result.isEmpty { return transcript.result }
             throw error
         }
     }
@@ -383,11 +388,17 @@ struct QwenAuth {
 final class QwenRawWS {
     private let conn: NWConnection
     private var buf = Data()
+    private var fragments: Data?
     private let q = DispatchQueue(label: "qwen.ws")
     private var dead = false
-    var alive: Bool { !dead }
+    private let stateLock = NSLock()
+    private let inbox: QwenInbox
+    private var reader: Task<Void, Never>?
+    var alive: Bool { stateLock.withLock { !dead } }
 
-    init(conn: NWConnection) { self.conn = conn }
+    init(conn: NWConnection, inbox: QwenInbox = QwenInbox()) { self.conn = conn; self.inbox = inbox }
+
+    deinit { reader?.cancel(); conn.cancel() }
 
     static func connect(auth: QwenAuth) async throws -> QwenRawWS {
         let tls = NWProtocolTLS.Options()
@@ -414,7 +425,7 @@ final class QwenRawWS {
             }
         }
         let ws = QwenRawWS(conn: conn)
-        ws.watch()
+        ws.startReading()
         try await ws.handshake(auth)
         return ws
     }
@@ -442,7 +453,7 @@ final class QwenRawWS {
                 head = Data(head[..<r.upperBound])
                 break
             }
-            head.append(try await recvSome())
+            head.append(try await inbox.read(timeout: 8))
             if head.count > 8192 { throw ASRError("千问握手过长") }
         }
         let status = String(data: head.split(separator: 0x0a).first ?? head, encoding: .utf8) ?? ""
@@ -463,48 +474,89 @@ final class QwenRawWS {
             if let f = try popFrame() { return f }
             let left = deadline.timeIntervalSinceNow
             if left <= 0 { break }
-            buf.append(try await recvSome())
+            buf.append(try await inbox.read(timeout: left))
         }
-        throw ASRError("服务器响应超时")
+        throw QwenReadError.timeout
     }
 
     func receiveOrNil(timeout: TimeInterval) async throws -> Data? {
         do { return try await receive(timeout: timeout) }
-        catch { return nil }
+        catch QwenReadError.timeout { return nil }
     }
 
-    func close() { dead = true; conn.cancel() }
+    func close() {
+        stateLock.withLock { dead = true }
+        reader?.cancel()
+        conn.cancel()
+        let inbox = self.inbox
+        Task { await inbox.finish(ASRError("千问连接已关闭")) }
+    }
 
-    private func watch() {
+    func startReading() {
+        guard reader == nil else { return }
         conn.stateUpdateHandler = { [weak self] st in
             switch st {
-            case .failed, .cancelled: self?.dead = true
+            case .failed, .cancelled:
+                guard let self else { return }
+                self.stateLock.withLock { self.dead = true }
             default: break
             }
+        }
+        let conn = self.conn
+        let inbox = self.inbox
+        reader = Task {
+            do {
+                while !Task.isCancelled {
+                    let data: Data = try await withCheckedThrowingContinuation { continuation in
+                        conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, complete, error in
+                            if let error { continuation.resume(throwing: error) }
+                            else if let data, !data.isEmpty { continuation.resume(returning: data) }
+                            else if complete { continuation.resume(throwing: ASRError("千问连接已关闭")) }
+                            else { continuation.resume(returning: Data()) }
+                        }
+                    }
+                    await inbox.push(data)
+                }
+            } catch { await inbox.finish(error) }
         }
     }
 
     private func popFrame() throws -> Data? {
-        let b = [UInt8](buf)
-        guard b.count >= 2 else { return nil }
-        let op = b[0] & 0x0f
-        var n = Int(b[1] & 0x7f)
-        var i = 2
-        if n == 126 {
-            guard b.count >= 4 else { return nil }
-            n = Int(b[2]) << 8 | Int(b[3]); i = 4
-        } else if n == 127 { return nil }
-        guard b.count >= i + n else { return nil }
-        let payload = Data(b[i..<(i + n)])
-        buf = Data(b[(i + n)...])
-        if op == 0x9 {
-            let p = payload
-            Task { try? await sendRaw(Self.frame(p, opcode: 0xA)) }
-            return try popFrame()
+        while true {
+            let b = [UInt8](buf)
+            guard b.count >= 2 else { return nil }
+            let op = b[0] & 0x0f, final = b[0] & 0x80 != 0
+            var size = UInt64(b[1] & 0x7f), i = 2
+            if size == 126 {
+                guard b.count >= 4 else { return nil }
+                size = UInt64(b[2]) << 8 | UInt64(b[3]); i = 4
+            } else if size == 127 {
+                guard b.count >= 10 else { return nil }
+                size = b[2..<10].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }; i = 10
+            }
+            guard size <= 16 * 1024 * 1024 else { throw ASRError("千问 WS 帧过长") }
+            let masked = b[1] & 0x80 != 0
+            let keyOffset = i
+            if masked { i += 4 }
+            let n = Int(size)
+            guard b.count >= i + n else { return nil }
+            var payload = Data(b[i..<(i + n)])
+            if masked { for j in 0..<n { payload[j] ^= b[keyOffset + j % 4] } }
+            buf = Data(b[(i + n)...])
+            if op == 0x8 { close(); throw ASRError("千问 WS 关闭") }
+            if op == 0x9 {
+                let pong = payload
+                Task { try? await sendRaw(Self.frame(pong, opcode: 0xA)) }
+            } else if op == 0x1 || op == 0x2 {
+                if final { return payload }
+                fragments = payload
+            } else if op == 0, var message = fragments {
+                message.append(payload)
+                guard message.count <= 64 * 1024 * 1024 else { throw ASRError("千问 WS 消息过长") }
+                fragments = final ? nil : message
+                if final { return message }
+            }
         }
-        if op == 0x8 { dead = true; throw ASRError("千问 WS 关闭") }
-        if op == 0x1 || op == 0x2 { return payload }
-        return try popFrame()
     }
 
     private func sendRaw(_ d: Data) async throws {
@@ -512,15 +564,6 @@ final class QwenRawWS {
             conn.send(content: d, completion: .contentProcessed { e in
                 if let e { c.resume(throwing: e) } else { c.resume() }
             })
-        }
-    }
-
-    private func recvSome() async throws -> Data {
-        try await withCheckedThrowingContinuation { (c: CheckedContinuation<Data, Error>) in
-            conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, _, err in
-                if let err { c.resume(throwing: err); return }
-                c.resume(returning: data ?? Data())
-            }
         }
     }
 

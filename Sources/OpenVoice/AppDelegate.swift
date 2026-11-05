@@ -6,35 +6,58 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let hotkey = HotkeyMonitor()
     private let recorder = Recorder()
+    private let enginePool = DictationEnginePool()
+    private let activity = DictationActivity()
+    private lazy var capture = DictationCapture(start: { [unowned self] in try self.recorder.start() },
+                                               stop: { [unowned self] in self.recorder.stop() })
     private let hud = HUD()
     private let pick = PickHUD()
-    private let doubao = DoubaoEngine()
-    private let wetype = WeTypeEngine()
-    private let offline = OfflineEngine()
-    private let qwen = QwenEngine()
     private let meeting = MeetingSession()
     private var meetingPanel: MeetingPanel?
     private var sleepObserver: Any?
     private var statusItem: NSStatusItem!
     private var settingsWindow: NSWindow?
-    private var session: Task<Void, Never>?
     private var recording = false
     /// 点按开启的会话：静音超时自动结束
     private var autoStop = false
-    private var heardVoice = false
-    private var lastVoice = Date()
-    private var recognizeTimeout: DispatchWorkItem?
-    private var aborting = false
-    private var sessionGen = 0
-    private var picking = false
     private var caretAnchor: NSRect?
     private var previousApp: NSRunningApplication?
-    private var pickLatest: [String: (text: String, status: String)] = [:]
-    /// 本句已经显示过的中间结果；超时或失败时留下，不清空
-    private var livePartial = ""
     private var streamingNow = false
-    /// 长按并发送模式：成功定稿后补一个 Return；「全部」渠道自动采用第一个非空定稿
-    private var sendOnFinish = false
+    private var streamTyper: StreamTyper?
+    private var hasSession: Bool { dictation.isActive || picker.isActive }
+    private lazy var dictation: DictationSession = {
+        let model = DictationSession(startCapture: { [unowned self] in try self.capture.take() },
+                                     stopCapture: { [unowned self] in self.capture.stop() }, enginePool: enginePool)
+        model.onCaptureChanged = { [weak self] in self?.captureChanged($0) }
+        model.onSpeech = { [weak self] in self?.activity.speaking() }
+        model.onUpdate = { [weak self] text in
+            guard let self else { return }
+            if let typer = self.streamTyper { typer.update(text) }
+            else { self.hud.update(text) }
+        }
+        model.onFinish = { [weak self] result in self?.finishDictation(result) }
+        model.onCancel = { [weak self] text, message in
+            guard let self else { return }
+            self.streamTyper?.finish()
+            self.streamTyper = nil
+            if let message {
+                if !self.streamingNow, !text.isEmpty { TextInserter.insert(text) }
+                self.fail(text.isEmpty ? message : "\(message)，已保留已识别的文字")
+            } else { self.hud.hide() }
+        }
+        return model
+    }()
+    private lazy var picker: DictationPicker = {
+        let model = DictationPicker(startCapture: { [unowned self] in try self.capture.take() },
+                                    stopCapture: { [unowned self] in self.capture.stop() }, pool: enginePool)
+        model.onCaptureChanged = { [weak self] in self?.captureChanged($0) }
+        model.onSpeech = { [weak self] in self?.activity.speaking() }
+        model.onUpdate = { [weak self] rows, selected in self?.showPick(rows, selected: selected) }
+        model.onChoice = { [weak self] in self?.finishPick($0) }
+        model.onCancel = { [weak self] text, message in self?.cancelPick(text, message: message) }
+        model.onInvalidChoice = { NSSound.beep() }
+        return model
+    }()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         migrateLegacyState()
@@ -52,7 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         meetingPanel = MeetingPanel(model: meeting)
         meeting.onDismiss = { [weak self] in self?.meetingPanel?.hide() }
         meeting.onCaptureChanged = { [weak self] in self?.setIcon(recording: self?.recording ?? false) }
-        meeting.canBeginCapture = { [weak self] in self?.session == nil && !HotkeyMonitor.paused }
+        meeting.canBeginCapture = { [weak self] in self?.hasSession == false && self?.capture.isPrimed == false && !HotkeyMonitor.paused }
         // A sleeping Mac cannot record. Stop explicitly and retain every captured frame.
         sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -65,24 +88,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             AVCaptureDevice.requestAccess(for: .audio) { _ in }
         }
 
-        hotkey.onPress = { [weak self] in
-            guard let self else { return }
-            guard !self.meeting.isCapturing else { return }
-            if self.session != nil, !self.recording { self.abort(nil); return }
-            guard self.session == nil else { return }
-            if Channel.current == .all {
-                self.wetype.prewarm()
-                self.qwen.prewarm()
-                if OfflineAssets.installed { OfflineWorker.shared.prewarm() }
-                return
-            }
-            switch Channel.current {
-            case .wetype: self.wetype.prewarm()
-            case .qwen: self.qwen.prewarm()
-            case .offline where OfflineAssets.installed: OfflineWorker.shared.prewarm()
-            default: break
-            }
-        }
+        pick.onChoose = { [weak self] in self?.picker.choose($0) }
+        pick.onSelectionChange = { [weak self] in self?.picker.select($0) }
+        pick.onDigit = { [weak self] in self?.picker.digit($0) }
+        pick.onCancel = { [weak self] in self?.abort(nil) }
+        hotkey.onPress = { [weak self] in self?.primeRecording() }
+        hotkey.onCancel = { [weak self] in self?.capture.disarm() }
         hotkey.onLongPress = { [weak self] send in self?.begin(sendOnFinish: send) }
         hotkey.onRelease = { [weak self] _ in
             if self?.autoStop == false { self?.end() }
@@ -91,21 +102,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return }
             guard !self.meeting.isCapturing else { self.meetingPanel?.show(); return }
             if self.recording { self.end() }
-            else if self.session != nil { self.abort(nil) }
             else { self.begin(autoStop: true, sendOnFinish: false) }
         }
         hotkey.onMeeting = { [weak self] in self?.toggleMeeting() }
         hotkey.onEscape = { [weak self] in
-            guard let self, self.session != nil else { return }
+            guard let self, self.hasSession || self.capture.isPrimed else { return }
             self.abort(nil)
         }
         hotkey.onPickKey = { [weak self] key in
-            guard let self, self.picking || self.pick.isVisible else { return false }
+            guard let self, self.picker.isActive, !self.picker.sendsReturn else { return false }
             switch key {
-            case .up: self.pick.move(-1)
-            case .down: self.pick.move(1)
-            case .enter: self.pick.confirm()
+            case .up: self.picker.move(-1)
+            case .down: self.picker.move(1)
+            case .enter: self.picker.confirm()
             case .escape: self.abort(nil)
+            case let .digit(value): self.picker.digit(value)
             }
             return true
         }
@@ -141,282 +152,132 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return .terminateLater
     }
 
+    private func primeRecording() {
+        guard !meeting.isCapturing, !recording, !HotkeyMonitor.paused else { return }
+        try? capture.arm()
+        let channels: [Channel]
+        if dictation.isActive { channels = [dictation.channel] }
+        else if picker.isActive { channels = picker.rows.filter { $0.phase != .skipped }.map(\.channel) }
+        else if Channel.current == .all { channels = Channel.selectedMulti.filter { $0 != .offline || OfflineAssets.installed } }
+        else { channels = [Channel.current] }
+        for channel in channels { enginePool.prewarm(channel) }
+    }
+
+    private func captureChanged(_ recording: Bool) {
+        self.recording = recording
+        if recording { activity.start() }
+        else { activity.stop(); autoStop = false }
+        setIcon(recording: recording)
+    }
+
     private func begin(autoStop: Bool = false, sendOnFinish: Bool = false) {
-        guard !meeting.isCapturing else { meetingPanel?.show(); return }
-        guard session == nil else { return }
-        if Channel.current == .all {
-            beginPick(autoStop: autoStop, sendOnFinish: sendOnFinish)
-            return
-        }
-        let engine: ASREngine = switch Channel.current {
-        case .doubao: doubao
-        case .wetype: wetype
-        case .qwen: qwen
-        case .offline: offline
-        case .all: doubao
-        }
-        let audio: AsyncStream<[Int16]>
-        do {
-            audio = try recorder.start()
-        } catch {
-            fail("麦克风启动失败：\(error.localizedDescription)")
-            return
-        }
-        recording = true
-        self.autoStop = autoStop
-        self.sendOnFinish = sendOnFinish
-        heardVoice = false
-        lastVoice = Date()
-        setIcon(recording: true)
-        hud.show("", listening: true)
-        streamingNow = UserDefaults.standard.object(forKey: "streaming") as? Bool ?? true
-        livePartial = ""
-        let typer: StreamTyper? = streamingNow ? StreamTyper() : nil
-        aborting = false
-        sessionGen += 1
-        let gen = sessionGen
-        let sendAfterCompletion = sendOnFinish
-        session = Task { @MainActor [weak self] in
-            guard let self else { return }
+        guard !meeting.isCapturing else { capture.disarm(); meetingPanel?.show(); return }
+        guard !recording else { return }
+        if picker.isActive || (!dictation.isActive && Channel.current == .all) {
+            let continuing = picker.isActive
+            if !continuing {
+                caretAnchor = Caret.bounds()
+                previousApp = NSWorkspace.shared.frontmostApplication
+            }
             do {
-                let text = try await engine.run(audio: audio) { partial in
-                    DispatchQueue.main.async {
-                        guard self.sessionGen == gen else { return }
-                        self.livePartial = partial
-                        if let typer { typer.update(partial) } else { self.hud.update(partial) }
-                    }
-                }
-                guard self.sessionGen == gen else { return }
-                self.stopRecording()
-                self.recognizeTimeout?.cancel()
-                if let typer {
-                    // 定稿可能与流式结果不同（数字/标点整理），按差异修正；之后到达的迟到片段丢弃
-                    if !text.isEmpty { typer.update(text) }
-                    typer.finish()
-                    self.hud.hide()
-                    if sendAfterCompletion { TextInserter.pressReturn(after: 0.08) }
-                } else if !text.isEmpty {
-                    self.hud.hide()
-                    TextInserter.insert(text, sendsReturn: sendAfterCompletion)
-                } else if !self.livePartial.isEmpty {
-                    self.hud.hide()
-                    TextInserter.insert(self.livePartial, sendsReturn: sendAfterCompletion)
-                } else {
-                    self.hud.show("没有识别到内容", listening: false)
-                    self.hud.hide(after: 1)
-                }
-                self.livePartial = ""
-            } catch is CancellationError {
-                typer?.finish()
-                self.stopRecording()
-                self.recognizeTimeout?.cancel()
-                if !self.aborting { self.hud.hide() }
+                let skipped: Set<Channel> = OfflineAssets.installed ? [] : [.offline]
+                guard try picker.start(channels: Channel.selectedMulti, skipped: skipped, sendsReturn: sendOnFinish) else { return }
             } catch {
-                let kept = self.livePartial
-                self.livePartial = ""
-                typer?.finish()
-                self.stopRecording()
-                self.recognizeTimeout?.cancel()
-                if typer == nil, !kept.isEmpty { TextInserter.insert(kept) }
-                let tail = kept.isEmpty ? "" : "，已保留已识别的文字"
-                self.fail("识别失败：\(error.localizedDescription)\(tail)")
+                if !continuing { previousApp = nil }
+                fail("麦克风启动失败：\(error.localizedDescription)")
+                return
             }
-            if self.sessionGen == gen {
-                self.aborting = false
-                self.sendOnFinish = false
-                self.session = nil
-            }
+            self.autoStop = autoStop
+            if picker.sendsReturn { hud.show("", listening: true) }
+            return
         }
-    }
-
-    private func beginPick(autoStop: Bool, sendOnFinish: Bool) {
-        let audio: AsyncStream<[Int16]>
+        let continuing = dictation.isActive
+        let streaming = continuing ? streamingNow : (UserDefaults.standard.object(forKey: "streaming") as? Bool ?? true)
         do {
-            audio = try recorder.start()
+            guard try dictation.start(channel: Channel.current, sendsReturn: sendOnFinish, streaming: streaming) else { return }
         } catch {
             fail("麦克风启动失败：\(error.localizedDescription)")
             return
         }
-        recording = true
+        if !continuing {
+            streamingNow = streaming
+            streamTyper = streamingNow ? StreamTyper() : nil
+        }
         self.autoStop = autoStop
-        self.sendOnFinish = sendOnFinish
-        heardVoice = false
-        lastVoice = Date()
-        setIcon(recording: true)
-        hud.show("", listening: true)
-        caretAnchor = Caret.bounds()
-        streamingNow = false
-        livePartial = ""
-        previousApp = NSWorkspace.shared.frontmostApplication
-        aborting = false
-        sessionGen += 1
-        let gen = sessionGen
-        pickLatest = [:]
-        let items: [PickItem] = Channel.engines.map { ch in
-            if ch == .offline, !OfflineAssets.installed {
-                return PickItem(channel: ch, status: "跳过（未下载）")
-            }
-            return PickItem(channel: ch, status: "识别中")
-        }
-        let active = items.filter { $0.status == "识别中" }.map(\.channel)
-        let streams = ChannelCompare.fanout(audio, n: active.count)
-        pick.onChoose = { [weak self] text in self?.finishPick(text, sendsReturn: false) }
-        pick.onCancel = { [weak self] in self?.abort(nil) }
-        session = Task { @MainActor [weak self] in
-            guard let self else { return }
-            await withTaskGroup(of: Void.self) { g in
-                for (i, ch) in active.enumerated() {
-                    let stream = streams[i]
-                    g.addTask { @MainActor in await self.recognizePick(ch, stream, gen) }
-                }
-            }
-            guard self.sessionGen == gen else { return }
-            if self.sendOnFinish {
-                self.recognizeTimeout?.cancel()
-                self.hud.show("没有识别到内容", listening: false)
-                self.hud.hide(after: 1)
-                self.aborting = false
-                self.sendOnFinish = false
-                self.session = nil
-            }
+        hud.show(dictation.text, listening: true)
+    }
+
+    private func finishDictation(_ result: DictationSession.Result) {
+        let typer = streamTyper
+        streamTyper = nil
+        if !result.text.isEmpty { typer?.update(result.text) }
+        typer?.finish()
+        if let error = result.error {
+            if typer == nil, !result.text.isEmpty { TextInserter.insert(result.text) }
+            let tail = result.text.isEmpty ? "" : "，已保留已识别的文字"
+            fail("识别失败：\(error)\(tail)")
+        } else if result.text.isEmpty {
+            hud.show("没有识别到内容", listening: false)
+            hud.hide(after: 1)
+        } else {
+            hud.hide()
+            if typer == nil { TextInserter.insert(result.text, sendsReturn: result.sendsReturn) }
+            else if result.sendsReturn { TextInserter.pressReturn(after: 0.08) }
         }
     }
 
-    private func recognizePick(_ ch: Channel, _ stream: AsyncStream<[Int16]>, _ gen: Int) async {
-        let engine: ASREngine = switch ch {
-        case .doubao: doubao
-        case .wetype: wetype
-        case .qwen: qwen
-        case .offline: offline
-        case .all: doubao
-        }
-        do {
-            let text = try await engine.run(audio: stream) { [weak self] partial in
-                DispatchQueue.main.async {
-                    guard let self, self.sessionGen == gen else { return }
-                    self.notePick(ch, text: partial, status: "识别中")
-                }
-            }
-            guard sessionGen == gen else { return }
-            notePick(ch, text: text, status: "完成")
-        } catch is CancellationError {
-            if sessionGen == gen { notePick(ch, status: "已取消") }
-        } catch {
-            if sessionGen == gen { notePick(ch, status: error.localizedDescription) }
-        }
+    private func showPick(_ rows: [DictationPicker.Row], selected: Int) {
+        guard !picker.sendsReturn else { pick.hide(); return }
+        hud.hide()
+        pick.show(rows.map { PickItem(channel: $0.channel, text: $0.text, status: $0.status) },
+                  anchor: caretAnchor, selected: selected)
     }
 
-    private func notePick(_ ch: Channel, text: String? = nil, status: String? = nil) {
-        var cur = pickLatest[ch.rawValue] ?? (text: "", status: "")
-        if let text { cur.text = text }
-        if let status { cur.status = status }
-        pickLatest[ch.rawValue] = cur
-        if picking { pick.update(ch, text: text, status: status) }
-        if sendOnFinish, status == "完成", let finalText = text, !finalText.isEmpty {
-            finishPick(finalText, sendsReturn: true)
-        }
-    }
-
-    private func finishPick(_ text: String, sendsReturn: Bool) {
-        aborting = true
-        sessionGen += 1
-        recognizeTimeout?.cancel()
-        session?.cancel()
-        session = nil
-        picking = false
+    private func finishPick(_ choice: DictationPicker.Choice) {
         pick.hide()
         hud.hide()
-        stopRecording()
         let app = previousApp
         previousApp = nil
-        sendOnFinish = false
         app?.activate()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-            TextInserter.insert(text, sendsReturn: sendsReturn)
+            TextInserter.insert(choice.text, sendsReturn: choice.sendsReturn)
         }
     }
 
-    /// 说过话后静音超过设定时长即结束；一直没开口则 8 秒后放弃
+    private func cancelPick(_ text: String, message: String?) {
+        pick.hide()
+        let app = previousApp
+        previousApp = nil
+        app?.activate()
+        if let message {
+            if !text.isEmpty {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { TextInserter.insert(text) }
+            }
+            fail(text.isEmpty ? message : "\(message)，已保留已识别的文字")
+        } else { hud.hide() }
+    }
+
     private func checkSilence(_ level: Float) {
         guard recording, autoStop else { return }
-        if level > 0.3 {
-            heardVoice = true
-            lastVoice = Date()
-        } else if Date().timeIntervalSince(lastVoice) > (heardVoice ? Hotkey.silence : 8) {
-            end()
-        }
+        if activity.shouldStop(level: level, silence: Hotkey.silence, enabled: Hotkey.silenceStop) { end() }
     }
 
     private func end() {
-        guard recording else { return }
-        stopRecording()
-        if Channel.current == .all {
-            if sendOnFinish {
-                hud.show("识别中…", listening: false)
-                let work = DispatchWorkItem { [weak self] in self?.abort("识别超时") }
-                recognizeTimeout?.cancel()
-                recognizeTimeout = work
-                DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: work)
-            } else {
-                hud.hide()
-                picking = true
-                pick.show(Channel.engines.map { ch in
-                    if let latest = pickLatest[ch.rawValue] {
-                        return PickItem(channel: ch, text: latest.text, status: latest.status)
-                    }
-                    if ch == .offline, !OfflineAssets.installed {
-                        return PickItem(channel: ch, status: "跳过（未下载）")
-                    }
-                    return PickItem(channel: ch, status: "识别中")
-                }, anchor: caretAnchor)
-            }
-            return
+        guard recording else { capture.disarm(); return }
+        if dictation.isActive {
+            dictation.end()
+            if dictation.isActive { hud.show("识别中…", listening: false) }
+        } else if picker.isActive {
+            picker.end()
+            if picker.isActive, picker.sendsReturn { hud.show("识别中…", listening: false) }
         }
-        hud.show("识别中…", listening: false)
-        let work = DispatchWorkItem { [weak self] in self?.abort("识别超时") }
-        recognizeTimeout?.cancel()
-        recognizeTimeout = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: work)
     }
 
-    /// 打断「识别中」：点按/再按快捷键/Esc，或 15 秒超时。message 为 nil 表示用户取消。
     private func abort(_ message: String?) {
-        guard session != nil else { return }
-        let kept = livePartial
-        let stream = streamingNow
-        let picked = picking ? pick.selectedText() : ""
-        let app = previousApp
-        previousApp = nil
-        livePartial = ""
-        aborting = true
-        sessionGen += 1
-        recognizeTimeout?.cancel()
-        session?.cancel()
-        session = nil
-        stopRecording()
-        picking = false
-        sendOnFinish = false
-        pick.hide()
-        if let message {
-            if !stream, !kept.isEmpty {
-                TextInserter.insert(kept)
-            } else if !picked.isEmpty {
-                app?.activate()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { TextInserter.insert(picked) }
-            }
-            let keptAny = !kept.isEmpty || !picked.isEmpty
-            fail(keptAny ? "\(message)，已保留已识别的文字" : message)
-        } else {
-            hud.hide()
-        }
-    }
-
-    private func stopRecording() {
-        guard recording else { return }
-        recording = false
-        autoStop = false
-        recorder.stop()
-        setIcon(recording: false)
+        capture.disarm()
+        if dictation.isActive { dictation.cancel(message) }
+        else if picker.isActive { picker.cancel(message) }
+        else { hud.hide() }
     }
 
     private func fail(_ message: String) {
@@ -522,7 +383,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             fail("请先结束渠道对比或快捷键设置，再开始会议转写")
             return
         }
-        guard session == nil else {
+        guard !hasSession, !capture.isPrimed else {
             fail("请先结束当前语音输入，再开始会议转写")
             return
         }
@@ -536,7 +397,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func restoreMeeting() {
-        guard session == nil, !meeting.hasOpenMeeting else { return }
+        guard !hasSession, !capture.isPrimed, !meeting.hasOpenMeeting else { return }
         meeting.restoreLatest()
         meetingPanel?.show()
     }

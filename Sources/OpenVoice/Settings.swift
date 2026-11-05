@@ -12,7 +12,7 @@ enum Channel: String, CaseIterable, Identifiable {
         case .wetype: "微信输入法"
         case .qwen: "千问输入法"
         case .offline: "离线（本地模型）"
-        case .all: "全部"
+        case .all: "多渠道（说完挑选）"
         }
     }
     /// 离线渠道仅 Apple 芯片可用
@@ -20,6 +20,12 @@ enum Channel: String, CaseIterable, Identifiable {
         OfflineAssets.supported ? [.doubao, .wetype, .qwen, .offline] : [.doubao, .wetype, .qwen]
     }
     static var available: [Channel] { engines + [.all] }
+    static var selectedMulti: [Channel] { normalizedMulti(UserDefaults.standard.stringArray(forKey: "multi")) }
+    static func normalizedMulti(_ requested: [String]?, engines: [Channel] = Channel.engines) -> [Channel] {
+        let requested = Set(requested ?? engines.map(\.rawValue))
+        let selected = engines.filter { requested.contains($0.rawValue) }
+        return selected.count >= 2 ? selected : engines
+    }
     static var current: Channel {
         let c = Channel(rawValue: UserDefaults.standard.string(forKey: "channel") ?? "") ?? .doubao
         return available.contains(c) ? c : .doubao
@@ -44,6 +50,7 @@ enum Hotkey: String, CaseIterable, Identifiable {
     }
     /// 点按模式下静音多久自动结束
     static var silence: Double { UserDefaults.standard.object(forKey: "silence") as? Double ?? 1.5 }
+    static var silenceStop: Bool { UserDefaults.standard.object(forKey: "silenceStop") as? Bool ?? true }
 
     var title: String {
         switch self {
@@ -248,9 +255,11 @@ struct SettingsView: View {
     @AppStorage("meetingShortcut") private var meetingShortcut = Shortcut.meetingDefaultRaw
     @AppStorage("sendHotkey") private var sendHotkey = Hotkey.rightControl.rawValue
     @AppStorage("silence") private var silence = 1.5
+    @AppStorage("silenceStop") private var silenceStop = true
     @AppStorage("hudStyle") private var hudStyle = HUDStyle.compact.rawValue
     @AppStorage("streaming") private var streaming = true
     @AppStorage("micUID") private var micUID = ""
+    @State private var multi = Channel.selectedMulti
     @State private var microphones = Microphone.all()
     @ObservedObject private var offline = OfflineAssets.shared
     @State private var axTrusted = AXIsProcessTrusted()
@@ -267,13 +276,15 @@ struct SettingsView: View {
             : "在任意输入框中长按快捷键说话，松开后识别结果粘贴到光标处。"
         text += "\n长按 \(Hotkey(rawValue: sendHotkey)?.title ?? Hotkey.rightControl.title) 说话，定稿上屏后自动回车发送；渠道为「全部」时自动采用第一个非空定稿。"
         if tapShortcut != "off" {
-            text += "\n或点按一下点按快捷键开始聆听，停顿 \(String(format: "%g", silence)) 秒自动结束，再点一下可提前结束。"
+            text += silenceStop
+                ? "\n或点按一下点按快捷键开始聆听，停顿 \(String(format: "%g", silence)) 秒自动结束，再点一下可提前结束。"
+                : "\n或点按一下点按快捷键开始聆听，再点一下结束。"
         }
         if meetingShortcut != "off" {
             text += "\n会议快捷键开始持续收录麦克风和电脑声音，再按展开或收起。可拖动悬浮窗、暂停或恢复；渠道失败自动回退，音频和文字保存在本机。"
         }
         if channel == Channel.all.rawValue {
-            text += "\n说完后在输入框上方列出各渠道结果，点击或 ↑↓ 回车上屏。"
+            text += "\n各渠道实时显示候选，数字键或 ↑↓ 回车选取；未定稿时确认会等待完整结果，再按录音快捷键可继续说。"
         }
         return text
     }
@@ -299,6 +310,22 @@ struct SettingsView: View {
                     guard new == Channel.offline.rawValue, !OfflineAssets.installed else { return }
                     channelBeforeOffline = old
                     confirmOfflineDownload = true
+                }
+                if channel == Channel.all.rawValue {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("同时识别的渠道（至少两个）").font(.caption).foregroundStyle(.secondary)
+                        ForEach(Channel.engines) { item in
+                            Toggle(item.title, isOn: Binding(get: { multi.contains(item) }, set: { enabled in
+                                var selection = Set(multi)
+                                if enabled { selection.insert(item) } else { selection.remove(item) }
+                                guard selection.count >= 2 else { return }
+                                multi = Channel.engines.filter { selection.contains($0) }
+                                UserDefaults.standard.set(multi.map(\.rawValue), forKey: "multi")
+                            }))
+                            .toggleStyle(.checkbox)
+                            .disabled(multi.count <= 2 && multi.contains(item))
+                        }
+                    }
                 }
                 if channel == Channel.offline.rawValue {
                     OfflineStatus(offline: offline) {
@@ -339,9 +366,10 @@ struct SettingsView: View {
                         .foregroundStyle(.red)
                 }
                 if tapShortcut != "off" {
-                    Picker("静音自动结束", selection: $silence) {
+                    Toggle("静音自动结束", isOn: $silenceStop)
+                    Picker("静音时长", selection: $silence) {
                         ForEach([1.0, 1.5, 2.0, 3.0, 5.0], id: \.self) { Text("\($0, specifier: "%g") 秒").tag($0) }
-                    }
+                    }.disabled(!silenceStop)
                 }
                 Picker("提示框样式", selection: $hudStyle) {
                     ForEach(HUDStyle.allCases) { style in
@@ -539,10 +567,9 @@ final class ChannelCompare: ObservableObject {
     @Published var error: String?
 
     private let recorder = Recorder()
-    private let doubao = DoubaoEngine()
-    private let wetype = WeTypeEngine()
-    private let qwen = QwenEngine()
-    private let offline = OfflineEngine()
+    private let pool = DictationEnginePool()
+    private var generation = 0
+    private var pending: Set<Channel> = []
     private var work: Task<Void, Never>?
 
     func toggle() {
@@ -554,6 +581,8 @@ final class ChannelCompare: ObservableObject {
     }
 
     func cancel() {
+        generation += 1
+        pending = []
         if phase == .recording { recorder.stop() }
         work?.cancel()
         work = nil
@@ -570,15 +599,16 @@ final class ChannelCompare: ObservableObject {
             return Row(channel: ch, status: "识别中")
         }
         let active = rows.filter { $0.status == "识别中" }.map(\.channel)
+        generation += 1
+        let gen = generation
+        pending = Set(active)
         HotkeyMonitor.paused = true
         do {
             let source = try recorder.start()
             phase = .recording
-            wetype.prewarm()
-            qwen.prewarm()
-            if active.contains(.offline) { OfflineWorker.shared.prewarm() }
+            for channel in active { pool.prewarm(channel) }
             let streams = Self.fanout(source, n: active.count)
-            work = Task { await run(active, streams) }
+            work = Task { await run(active, streams, gen: gen) }
         } catch {
             HotkeyMonitor.paused = false
             phase = .idle
@@ -592,44 +622,46 @@ final class ChannelCompare: ObservableObject {
         phase = .recognizing
     }
 
-    private func run(_ channels: [Channel], _ streams: [AsyncStream<[Int16]>]) async {
+    private func run(_ channels: [Channel], _ streams: [AsyncStream<[Int16]>], gen: Int) async {
         await withTaskGroup(of: Void.self) { g in
             for (i, ch) in channels.enumerated() {
                 let stream = streams[i]
-                g.addTask { await self.recognize(ch, stream) }
+                let lease = pool.take(ch)
+                g.addTask { await self.recognize(ch, stream, lease: lease, gen: gen) }
             }
         }
-        HotkeyMonitor.paused = false
-        phase = .idle
-        work = nil
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.generation == gen else { return }
+            if self.phase == .recording { self.recorder.stop() }
+            HotkeyMonitor.paused = false
+            self.phase = .idle
+            self.work = nil
+        }
     }
 
-    private func recognize(_ ch: Channel, _ stream: AsyncStream<[Int16]>) async {
-        let engine: ASREngine = switch ch {
-        case .doubao: doubao
-        case .wetype: wetype
-        case .qwen: qwen
-        case .offline: offline
-        case .all: doubao
-        }
+    private func recognize(_ ch: Channel, _ stream: AsyncStream<[Int16]>, lease: DictationEnginePool.Lease, gen: Int) async {
         let t0 = Date()
         do {
-            let text = try await engine.run(audio: stream) { [weak self] p in
-                Task { @MainActor in self?.set(ch, text: p) }
+            await lease.ready()
+            try Task.checkCancellation()
+            let text = try await lease.engine.run(audio: stream) { [weak self] p in
+                DispatchQueue.main.async { [weak self] in self?.set(ch, gen: gen, text: p) }
             }
+            if !Task.isCancelled { pool.reuse(lease.engine, channel: ch) }
             let sec = String(format: "%.2fs", Date().timeIntervalSince(t0))
-            set(ch, text: text, status: sec)
+            DispatchQueue.main.async { [weak self] in self?.set(ch, gen: gen, text: text, status: sec) }
         } catch is CancellationError {
-            set(ch, status: "已取消")
+            DispatchQueue.main.async { [weak self] in self?.set(ch, gen: gen, status: "已取消") }
         } catch {
-            set(ch, status: error.localizedDescription)
+            let message = error.localizedDescription
+            DispatchQueue.main.async { [weak self] in self?.set(ch, gen: gen, status: message) }
         }
     }
 
-    private func set(_ ch: Channel, text: String? = nil, status: String? = nil) {
-        guard let i = rows.firstIndex(where: { $0.channel == ch }) else { return }
+    private func set(_ ch: Channel, gen: Int, text: String? = nil, status: String? = nil) {
+        guard generation == gen, pending.contains(ch), let i = rows.firstIndex(where: { $0.channel == ch }) else { return }
         if let text { rows[i].text = text }
-        if let status { rows[i].status = status }
+        if let status { rows[i].status = status; pending.remove(ch) }
     }
 
     nonisolated static func fanout(_ source: AsyncStream<[Int16]>, n: Int) -> [AsyncStream<[Int16]>] {

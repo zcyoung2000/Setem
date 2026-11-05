@@ -1,9 +1,30 @@
 import AppKit
 import SwiftUI
 
+enum DictationEvents { static let marker: Int64 = 0x564B_4559 }
+
 /// 长按键：按住超过阈值开始、松开结束；发送模式会携带到定稿处理。点按快捷键：单个修饰键在阈值内松开，或组合键按下（吞掉不传给前台 App）
 final class HotkeyMonitor {
+    struct Configuration {
+        let hold: Hotkey
+        let send: Hotkey
+        let tap: Shortcut?
+        let meeting: Shortcut?
+    }
+    private let configuration: () -> Configuration
+    private let scheduleHold: (TimeInterval, @escaping () -> Void) -> Timer
+
+    init(configuration: @escaping () -> Configuration = {
+        Configuration(hold: .current, send: .sendHold, tap: .tap, meeting: .meeting)
+    }, scheduleHold: @escaping (TimeInterval, @escaping () -> Void) -> Timer = { delay, fire in
+        Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { _ in fire() }
+    }) {
+        self.configuration = configuration
+        self.scheduleHold = scheduleHold
+    }
+
     var onPress: () -> Void = {}
+    var onCancel: () -> Void = {}
     var onLongPress: (Bool) -> Void = { _ in }
     var onRelease: (Bool) -> Void = { _ in }
     var onTap: () -> Void = {}
@@ -23,6 +44,7 @@ final class HotkeyMonitor {
     private var active = false
     private var holdKind: HoldKind?
     private var timer: Timer?
+    private var holdToken = 0
 
     /// 无权限时创建会失败，定时重试直到用户授权
     func start() {
@@ -49,28 +71,24 @@ final class HotkeyMonitor {
     }
 
     /// 返回 true 表示吞掉该事件
-    private func handle(_ type: CGEventType, _ event: CGEvent) -> Bool {
+    func handle(_ type: CGEventType, _ event: CGEvent) -> Bool {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
             return false
         }
+        guard event.getIntegerValueField(.eventSourceUserData) != DictationEvents.marker else { return false }
         let code = event.getIntegerValueField(.keyboardEventKeycode)
         if type == .keyDown {
-            let pick: PickKey? = switch code {
-            case 126: .up
-            case 125: .down
-            case 36, 76: .enter
-            case 53: .escape
-            default: nil
-            }
+            let pick = PickKey.from(code)
             if let pick, onPickKey?(pick) == true { return true }
         }
         guard !Self.paused else { return false }
-        let shortcut = Shortcut.tap
-        let sendHold = Hotkey.sendHold
+        let config = configuration()
+        let shortcut = config.tap
+        let sendHold = config.send
         switch type {
         case .keyDown:
-            if let meeting = Shortcut.meeting, !meeting.isModifier, code == meeting.keyCode,
+            if let meeting = config.meeting, !meeting.isModifier, code == meeting.keyCode,
                event.flags.intersection(Shortcut.mask).rawValue == meeting.modifiers {
                 cancelPending()
                 swallowedCode = code
@@ -93,7 +111,7 @@ final class HotkeyMonitor {
                 return true
             }
         case .flagsChanged:
-            let hold = Hotkey.current
+            let hold = config.hold
             let sendCode = sendHold.keyCode
             let tapCode = shortcut.flatMap { $0.isModifier ? $0.keyCode : nil }
             guard code == downCode ?? code, code == hold.keyCode || code == sendCode || code == tapCode,
@@ -111,6 +129,7 @@ final class HotkeyMonitor {
                 if let kind { beginPendingHold(kind) }
             } else if !pressed, downCode != nil {
                 downCode = nil
+                holdToken += 1
                 timer?.invalidate()
                 if active {
                     active = false
@@ -119,7 +138,7 @@ final class HotkeyMonitor {
                     onRelease(kind == .send)
                 } else if code == tapCode, !cancelled, Date().timeIntervalSince(pressedAt) < Self.threshold {
                     onTap()
-                }
+                } else { onCancel() }
             }
         default: break
         }
@@ -129,8 +148,10 @@ final class HotkeyMonitor {
     private func beginPendingHold(_ kind: HoldKind) {
         cancelled = false
         holdKind = kind
-        timer = Timer.scheduledTimer(withTimeInterval: Self.threshold, repeats: false) { [weak self] _ in
-            guard let self, !self.cancelled,
+        holdToken += 1
+        let token = holdToken
+        timer = scheduleHold(Self.threshold) { [weak self] in
+            guard let self, self.holdToken == token, !self.cancelled,
                   self.downCode != nil else { return }
             self.active = true
             self.onLongPress(kind == .send)
@@ -138,10 +159,12 @@ final class HotkeyMonitor {
     }
 
     private func cancelPending() {
+        holdToken += 1
         cancelled = true
         timer?.invalidate()
         timer = nil
         if !active { holdKind = nil }
+        onCancel()
     }
 }
 
@@ -162,6 +185,7 @@ enum TextInserter {
         for isDown in [true, false] {
             let e = CGEvent(keyboardEventSource: src, virtualKey: 9, keyDown: isDown)
             e?.flags = .maskCommand
+            e?.setIntegerValueField(.eventSourceUserData, value: DictationEvents.marker)
             e?.post(tap: .cghidEventTap)
         }
         if sendsReturn { pressReturn(after: 0.12) }
@@ -179,6 +203,7 @@ enum TextInserter {
             for isDown in [true, false] {
                 guard let e = CGEvent(keyboardEventSource: source, virtualKey: 36, keyDown: isDown) else { continue }
                 e.flags = []
+                e.setIntegerValueField(.eventSourceUserData, value: DictationEvents.marker)
                 e.post(tap: .cghidEventTap)
             }
         }
@@ -191,6 +216,9 @@ final class StreamTyper {
     private var done = false
     /// 私有事件源：不混入用户仍按着的修饰键
     private let source = CGEventSource(stateID: .privateState)
+    private let post: (CGEvent) -> Void
+
+    init(post: @escaping (CGEvent) -> Void = { $0.post(tap: .cghidEventTap) }) { self.post = post }
 
     func update(_ text: String) {
         guard !done else { return }
@@ -212,8 +240,9 @@ final class StreamTyper {
         for isDown in [true, false] {
             guard let e = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: isDown) else { continue }
             e.flags = []
+            e.setIntegerValueField(.eventSourceUserData, value: DictationEvents.marker)
             if let unicode { e.keyboardSetUnicodeString(stringLength: unicode.count, unicodeString: unicode) }
-            e.post(tap: .cghidEventTap)
+            post(e)
         }
     }
 }
@@ -418,7 +447,20 @@ final class HUD {
     }
 }
 
-enum PickKey { case up, down, enter, escape }
+enum PickKey: Equatable {
+    case up, down, enter, escape, digit(Int)
+    static func from(_ code: Int64) -> PickKey? {
+        switch code {
+        case 126: return .up
+        case 125: return .down
+        case 36, 76: return .enter
+        case 53: return .escape
+        default:
+            let digits: [Int64: Int] = [18: 1, 19: 2, 20: 3, 21: 4, 23: 5, 22: 6, 26: 7, 28: 8, 25: 9]
+            return digits[code].map { .digit($0) }
+        }
+    }
+}
 
 /// 当前输入焦点的选区/控件屏幕坐标（Cocoa，原点在左下）
 enum Caret {
@@ -479,7 +521,7 @@ private struct PickView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("选择识别结果  ↑↓ 回车")
+            Text("选择识别结果  数字键 / ↑↓ 回车")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 12)
@@ -487,14 +529,16 @@ private struct PickView: View {
                 .padding(.bottom, 4)
             ForEach(Array(model.items.enumerated()), id: \.element.id) { i, item in
                 HStack(alignment: .top, spacing: 10) {
-                    Text(item.channel.title)
+                    Text("\(i + 1). \(item.channel.title)")
                         .font(.system(size: 13, weight: .medium))
                         .frame(width: 92, alignment: .leading)
-                    Text(item.text.isEmpty ? item.status : item.text)
-                        .font(.system(size: 13))
-                        .foregroundStyle(item.text.isEmpty ? .secondary : .primary)
-                        .lineLimit(3)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.text.isEmpty ? item.status : item.text)
+                            .font(.system(size: 13))
+                            .foregroundStyle(item.text.isEmpty ? .secondary : .primary)
+                            .lineLimit(3)
+                        if !item.text.isEmpty { Text(item.status).font(.caption2).foregroundStyle(.secondary) }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 7)
@@ -522,14 +566,14 @@ private final class PickHost: NSHostingView<PickView> {
     var onKey: ((PickKey) -> Void)?
     override var acceptsFirstResponder: Bool { true }
     override func keyDown(with event: NSEvent) {
-        switch event.keyCode {
-        case 126: onKey?(.up)
-        case 125: onKey?(.down)
-        case 36, 76: onKey?(.enter)
-        case 53: onKey?(.escape)
-        default: super.keyDown(with: event)
-        }
+        if let key = PickKey.from(Int64(event.keyCode)) { onKey?(key) }
+        else { super.keyDown(with: event) }
     }
+}
+
+private final class PickPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
 }
 
 /// 输入框上方的结果挑选浮层
@@ -538,12 +582,15 @@ final class PickHUD {
     private let panel: NSPanel
     private let host: PickHost
     private var anchor = NSRect.zero
+    private var visibilityGeneration = 0
 
-    var onChoose: (String) -> Void = { _ in }
+    var onChoose: (Channel) -> Void = { _ in }
+    var onSelectionChange: (Channel) -> Void = { _ in }
+    var onDigit: (Int) -> Void = { _ in }
     var onCancel: () -> Void = {}
 
     init() {
-        panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        panel = PickPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
@@ -561,18 +608,23 @@ final class PickHUD {
             case .down: self.move(1)
             case .enter: self.confirm()
             case .escape: self.onCancel()
+            case let .digit(value): self.onDigit(value)
             }
         }
     }
 
     var isVisible: Bool { panel.isVisible }
+    var windowForDiagnostics: NSWindow { panel }
 
-    func show(_ items: [PickItem], anchor: NSRect?) {
+    func show(_ items: [PickItem], anchor: NSRect?, selected: Int = 0) {
         self.anchor = anchor ?? .zero
         model.items = items
-        model.selected = 0
+        model.selected = items.indices.contains(selected) ? selected : 0
+        visibilityGeneration += 1
+        let gen = visibilityGeneration
+        if panel.isVisible { layout(); return }
         DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
+            guard let self, self.visibilityGeneration == gen else { return }
             self.layout()
             self.panel.makeKeyAndOrderFront(nil)
             self.panel.makeFirstResponder(self.host)
@@ -593,6 +645,7 @@ final class PickHUD {
         let n = model.items.count
         guard n > 0 else { return }
         model.selected = (model.selected + delta + n) % n
+        onSelectionChange(model.items[model.selected].channel)
     }
 
     func confirm() { confirm(model.selected) }
@@ -602,13 +655,11 @@ final class PickHUD {
         return model.items[model.selected].text
     }
 
-    func hide() { panel.orderOut(nil) }
+    func hide() { visibilityGeneration += 1; panel.orderOut(nil) }
 
     private func confirm(_ i: Int) {
         guard model.items.indices.contains(i) else { return }
-        let text = model.items[i].text
-        guard !text.isEmpty else { NSSound.beep(); return }
-        onChoose(text)
+        onChoose(model.items[i].channel)
     }
 
     private func layout() {

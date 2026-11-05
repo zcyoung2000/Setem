@@ -14,6 +14,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Run regression baseline
+        run: ./Scripts/test.sh
+
       - name: Build
         run: |
           VER="${GITHUB_REF_NAME#v}"

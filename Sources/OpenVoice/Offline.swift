@@ -248,14 +248,27 @@ final class OfflineWorker: @unchecked Sendable {
 
 final class OfflineEngine: ASREngine {
     private let dedicatedWorker: Bool
-    init(dedicatedWorker: Bool = false) { self.dedicatedWorker = dedicatedWorker }
+    private let warmWorker: OfflineWorker?
+    init(dedicatedWorker: Bool = false, keepsWorkerWarm: Bool = false) {
+        self.dedicatedWorker = dedicatedWorker
+        warmWorker = dedicatedWorker && keepsWorkerWarm ? OfflineWorker() : nil
+    }
+
+    deinit {
+        if let worker = warmWorker { Task { await worker.shutdown() } }
+    }
+
+    func prepare() async {
+        guard OfflineAssets.installed else { return }
+        (warmWorker ?? OfflineWorker.shared).prewarm()
+    }
 
     func run(audio: AsyncStream<[Int16]>, partial: @escaping (String) -> Void) async throws -> String {
         guard OfflineAssets.installed else {
             throw ASRError("离线模型未下载，请在设置中确认下载")
         }
         // Overlapping meeting segments must not reset another segment's local recognizer.
-        let w = dedicatedWorker ? OfflineWorker() : OfflineWorker.shared
+        let w = warmWorker ?? (dedicatedWorker ? OfflineWorker() : OfflineWorker.shared)
         return try await withTaskCancellationHandler {
             try await recognize(audio: audio, worker: w, partial: partial)
         } onCancel: {
@@ -279,7 +292,7 @@ final class OfflineEngine: ASREngine {
             }
             if !pcm.isEmpty { try await flush() }
             let result = try await w.call("end")
-            if dedicatedWorker { await w.shutdown() }
+            if dedicatedWorker, warmWorker == nil { await w.shutdown() }
             return result
         } catch {
             if dedicatedWorker { await w.shutdown() }
