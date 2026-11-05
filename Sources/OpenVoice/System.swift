@@ -229,7 +229,14 @@ final class StreamTyper {
         let tail = String(next[common...])
         if !tail.isEmpty {
             let units = Array(tail.utf16)
-            for i in stride(from: 0, to: units.count, by: 20) { key(0, Array(units[i..<min(i + 20, units.count)])) }
+            var start = 0
+            while start < units.count {
+                var end = min(start + 20, units.count)
+                // Each event must contain valid UTF-16; keep surrogate pairs together.
+                if end < units.count, (0xD800...0xDBFF).contains(units[end - 1]) { end -= 1 }
+                key(0, Array(units[start..<end]))
+                start = end
+            }
         }
         typed = next
     }
@@ -248,9 +255,11 @@ final class StreamTyper {
 }
 
 final class HUDModel: ObservableObject {
+    enum Phase { case hidden, listening, thinking, message }
     @Published var text = ""
-    @Published var listening = false
+    @Published var phase: Phase = .hidden
     @Published var level: CGFloat = 0
+    var listening: Bool { phase == .listening }
 
     /// 起音快、释放慢，避免波形抖动
     func push(_ raw: Float) {
@@ -298,6 +307,59 @@ private struct VoiceWave: View {
     }
 }
 
+private struct HUDStatusContent: NSViewRepresentable {
+    let text: String
+    let thinking: Bool
+    let fontSize: CGFloat
+
+    func makeNSView(context: Context) -> NSStackView {
+        let spinner = NSProgressIndicator()
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.isIndeterminate = true
+        spinner.isDisplayedWhenStopped = false
+        spinner.identifier = NSUserInterfaceItemIdentifier("dictation-thinking-progress")
+        spinner.widthAnchor.constraint(equalToConstant: 16).isActive = true
+        spinner.heightAnchor.constraint(equalToConstant: 16).isActive = true
+        let label = NSTextField(labelWithString: text)
+        label.identifier = NSUserInterfaceItemIdentifier("dictation-status-label")
+        label.maximumNumberOfLines = 2
+        label.lineBreakMode = .byTruncatingTail
+        label.preferredMaxLayoutWidth = 360
+        label.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let stack = NSStackView(views: [spinner, label])
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 8
+        stack.detachesHiddenViews = true
+        configure(stack)
+        return stack
+    }
+
+    func updateNSView(_ nsView: NSStackView, context: Context) { configure(nsView) }
+
+    static func dismantleNSView(_ nsView: NSStackView, coordinator: ()) {
+        for case let spinner as NSProgressIndicator in nsView.views { spinner.stopAnimation(nil) }
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSStackView, context: Context) -> CGSize? {
+        nsView.fittingSize
+    }
+
+    private func configure(_ stack: NSStackView) {
+        for view in stack.views {
+            if let spinner = view as? NSProgressIndicator {
+                spinner.isHidden = !thinking
+                if thinking { spinner.startAnimation(nil) } else { spinner.stopAnimation(nil) }
+            } else if let label = view as? NSTextField {
+                label.stringValue = text
+                label.font = .systemFont(ofSize: fontSize, weight: thinking ? .medium : .regular)
+                label.textColor = .labelColor
+            }
+        }
+    }
+}
+
 private struct HUDView: View {
     @ObservedObject var model: HUDModel
     @AppStorage("hudStyle") private var hudStyle = HUDStyle.compact.rawValue
@@ -305,16 +367,31 @@ private struct HUDView: View {
     var isCompact: Bool { hudStyle != HUDStyle.standard.rawValue }
 
     var body: some View {
-        VoiceWave(
-            width: isCompact ? 72 : 140,
-            height: isCompact ? 18 : 34,
-            level: model.listening ? model.level : 0,
-            idle: !model.listening
-        )
+        content
         .padding(.horizontal, isCompact ? 11 : 16)
         .padding(.vertical, isCompact ? 5 : 8)
         .liquidGlassBackground(in: Capsule())
         .fixedSize()
+    }
+
+    @ViewBuilder private var content: some View {
+        switch model.phase {
+        case .listening:
+            VoiceWave(width: isCompact ? 72 : 140, height: isCompact ? 18 : 34, level: model.level)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("正在录音")
+                .accessibilityIdentifier("dictation-wave")
+        case .thinking:
+            HUDStatusContent(text: model.text, thinking: true, fontSize: isCompact ? 13 : 14)
+                .fixedSize()
+                .frame(minWidth: isCompact ? 82 : 140, minHeight: isCompact ? 18 : 34)
+        case .message:
+            HUDStatusContent(text: model.text, thinking: false, fontSize: 13)
+                .fixedSize()
+                .frame(maxWidth: 360)
+        case .hidden:
+            EmptyView()
+        }
     }
 }
 
@@ -394,9 +471,13 @@ final class HUD {
     private let model = HUDModel()
     private let panel: NSPanel
     private var hideWork: DispatchWorkItem?
+    var isVisible: Bool { panel.isVisible }
+
+    var windowForDiagnostics: NSWindow { panel }
 
     init() {
         panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        panel.animationBehavior = .none
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
@@ -411,12 +492,23 @@ final class HUD {
     }
 
     func show(_ text: String, listening: Bool) {
+        present(text, phase: listening ? .listening : .message)
+    }
+
+    func showThinking() { present("thinking", phase: .thinking) }
+
+    private func present(_ text: String, phase: HUDModel.Phase) {
         hideWork?.cancel()
         model.text = text
-        model.listening = listening
+        model.phase = phase
         model.level = 0
         layout()
         panel.orderFrontRegardless()
+        // SwiftUI may publish its new intrinsic size on the next main-loop turn.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.panel.isVisible else { return }
+            self.layout()
+        }
     }
 
     func level(_ value: Float) {
@@ -425,14 +517,23 @@ final class HUD {
     }
 
     func update(_ text: String) {
-        guard panel.isVisible, !text.isEmpty else { return }
+        guard panel.isVisible, model.phase != .thinking, !text.isEmpty else { return }
         model.text = text
         layout()
     }
 
     func hide(after delay: TimeInterval = 0) {
         hideWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.panel.orderOut(nil) }
+        hideWork = nil
+        guard delay > 0 else {
+            model.phase = .hidden
+            panel.orderOut(nil)
+            return
+        }
+        let work = DispatchWorkItem { [weak self] in
+            self?.model.phase = .hidden
+            self?.panel.orderOut(nil)
+        }
         hideWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }

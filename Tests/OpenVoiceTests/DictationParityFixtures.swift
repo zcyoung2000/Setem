@@ -82,6 +82,7 @@ final class ParityEngine: ASREngine {
         var samples: [Int16] = []
         var ended = false
         var returned = false
+        var wasCancelled = false
         init(_ partial: @escaping (String) -> Void) { self.partial = partial }
         func resolve(_ result: Result<String, Error>) {
             let continuation = reply; reply = nil; continuation?.resume(with: result)
@@ -104,7 +105,7 @@ final class ParityEngine: ASREngine {
             for await frame in audio { round.samples.append(frame[0]) }
             round.ended = true
         }
-        defer { reader.cancel(); round.returned = true }
+        defer { round.wasCancelled = Task.isCancelled; reader.cancel(); round.returned = true }
         return try await withCheckedThrowingContinuation { round.reply = $0 }
     }
     func close() {

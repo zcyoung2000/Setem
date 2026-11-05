@@ -36,18 +36,6 @@ final class DictationInputTests: XCTestCase {
         return event
     }
 
-    private func rendered(_ events: [CGEvent]) -> String {
-        var text = ""
-        for event in events where event.type == .keyDown {
-            if event.getIntegerValueField(.keyboardEventKeycode) == 51 { text.removeLast() }
-            else {
-                var units = [UniChar](repeating: 0, count: 20), length = 0
-                event.keyboardGetUnicodeString(maxStringLength: units.count, actualStringLength: &length, unicodeString: &units)
-                text += String(decoding: units.prefix(length), as: UTF16.self)
-            }
-        }
-        return text
-    }
 
     func testHotkeyCaptureSessionAndPolishedInputWorkTogether() async throws {
         let wasPaused = HotkeyMonitor.paused
@@ -92,7 +80,7 @@ final class DictationInputTests: XCTestCase {
         engine.rounds[0].resolve(.success("通知张经理，带上完整测试报告。"))
         try await parityEventually { result != nil }
         XCTAssertEqual(result?.text, "通知张经理，带上完整测试报告。")
-        XCTAssertEqual(rendered(events), result?.text)
+        XCTAssertEqual(renderedDictationEvents(events), result?.text)
         XCTAssertEqual(hardware.stops, 1)
     }
 
@@ -172,4 +160,37 @@ final class DictationInputTests: XCTestCase {
         XCTAssertEqual(codes.compactMap(PickKey.from), (1...9).map(PickKey.digit))
         XCTAssertNil(PickKey.from(0))
     }
+
+    func testStreamTyperPreservesSurrogatePairsAtEventBoundaries() {
+        for count in [19, 39] {
+            for tail in ["𠮷野家的完整尾字。", "😀收到完整尾字。"] {
+                let expected = String(repeating: "字", count: count) + tail
+                var events: [CGEvent] = []
+                let typer = StreamTyper(post: { events.append($0) })
+                typer.update("初稿需要润色")
+                typer.update(expected)
+                typer.finish()
+                XCTAssertEqual(renderedDictationEvents(events), expected)
+                for event in events where event.type == .keyDown && event.getIntegerValueField(.keyboardEventKeycode) != 51 {
+                    var units = [UniChar](repeating: 0, count: 20), length = 0
+                    event.keyboardGetUnicodeString(maxStringLength: units.count, actualStringLength: &length, unicodeString: &units)
+                    let data = units.prefix(length).withContiguousStorageIfAvailable { Data(buffer: $0) }!
+                    XCTAssertNotNil(String(data: data, encoding: .utf16LittleEndian), "Each keyboard event must carry independently valid UTF-16")
+                }
+            }
+        }
+    }
+}
+
+func renderedDictationEvents(_ events: [CGEvent]) -> String {
+    var text = ""
+    for event in events where event.type == .keyDown {
+        if event.getIntegerValueField(.keyboardEventKeycode) == 51 { text.removeLast() }
+        else {
+            var units = [UniChar](repeating: 0, count: 20), length = 0
+            event.keyboardGetUnicodeString(maxStringLength: units.count, actualStringLength: &length, unicodeString: &units)
+            text += String(decoding: units.prefix(length), as: UTF16.self)
+        }
+    }
+    return text
 }

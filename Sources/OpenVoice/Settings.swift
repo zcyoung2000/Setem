@@ -20,14 +20,16 @@ enum Channel: String, CaseIterable, Identifiable {
         OfflineAssets.supported ? [.doubao, .wetype, .qwen, .offline] : [.doubao, .wetype, .qwen]
     }
     static var available: [Channel] { engines + [.all] }
-    static var selectedMulti: [Channel] { normalizedMulti(UserDefaults.standard.stringArray(forKey: "multi")) }
+    static var selectedMulti: [Channel] { selectedMulti(in: .standard) }
+    static func selectedMulti(in defaults: UserDefaults) -> [Channel] { normalizedMulti(defaults.stringArray(forKey: "multi")) }
     static func normalizedMulti(_ requested: [String]?, engines: [Channel] = Channel.engines) -> [Channel] {
         let requested = Set(requested ?? engines.map(\.rawValue))
         let selected = engines.filter { requested.contains($0.rawValue) }
         return selected.count >= 2 ? selected : engines
     }
-    static var current: Channel {
-        let c = Channel(rawValue: UserDefaults.standard.string(forKey: "channel") ?? "") ?? .doubao
+    static var current: Channel { current(in: .standard) }
+    static func current(in defaults: UserDefaults) -> Channel {
+        let c = Channel(rawValue: defaults.string(forKey: "channel") ?? "") ?? .doubao
         return available.contains(c) ? c : .doubao
     }
 }

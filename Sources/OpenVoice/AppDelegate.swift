@@ -6,11 +6,15 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let hotkey = HotkeyMonitor()
     private let recorder = Recorder()
-    private let enginePool = DictationEnginePool()
+    private let enginePool: DictationEnginePool
+    private let providedCapture: DictationCapture?
     private let activity = DictationActivity()
-    private lazy var capture = DictationCapture(start: { [unowned self] in try self.recorder.start() },
-                                               stop: { [unowned self] in self.recorder.stop() })
-    private let hud = HUD()
+    private lazy var capture = providedCapture ?? DictationCapture(start: { [unowned self] in try self.recorder.start() },
+                                                                  stop: { [unowned self] in self.recorder.stop() })
+    private let hud: HUD
+    private let insertText: (String, Bool) -> Void
+    private let makeStreamTyper: () -> StreamTyper
+    private let defaults: UserDefaults
     private let pick = PickHUD()
     private let meeting = MeetingSession()
     private var meetingPanel: MeetingPanel?
@@ -25,7 +29,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var streamingNow = false
     private var streamTyper: StreamTyper?
     private var hasSession: Bool { dictation.isActive || picker.isActive }
-    private lazy var dictation: DictationSession = {
+    init(capture: DictationCapture? = nil, enginePool: DictationEnginePool? = nil, hud: HUD? = nil,
+         defaults: UserDefaults = .standard,
+         insertText: @escaping (String, Bool) -> Void = { TextInserter.insert($0, sendsReturn: $1) },
+         makeStreamTyper: @escaping () -> StreamTyper = { StreamTyper() }) {
+        providedCapture = capture
+        self.enginePool = enginePool ?? DictationEnginePool()
+        self.hud = hud ?? HUD()
+        self.defaults = defaults
+        self.insertText = insertText
+        self.makeStreamTyper = makeStreamTyper
+        super.init()
+    }
+
+    private(set) lazy var dictation: DictationSession = {
         let model = DictationSession(startCapture: { [unowned self] in try self.capture.take() },
                                      stopCapture: { [unowned self] in self.capture.stop() }, enginePool: enginePool)
         model.onCaptureChanged = { [weak self] in self?.captureChanged($0) }
@@ -41,15 +58,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.streamTyper?.finish()
             self.streamTyper = nil
             if let message {
-                if !self.streamingNow, !text.isEmpty { TextInserter.insert(text) }
+                if !self.streamingNow, !text.isEmpty { self.insertText(text, false) }
                 self.fail(text.isEmpty ? message : "\(message)，已保留已识别的文字")
             } else { self.hud.hide() }
         }
         return model
     }()
-    private lazy var picker: DictationPicker = {
+    private(set) lazy var picker: DictationPicker = {
         let model = DictationPicker(startCapture: { [unowned self] in try self.capture.take() },
-                                    stopCapture: { [unowned self] in self.capture.stop() }, pool: enginePool)
+                                    stopCapture: { [unowned self] in self.capture.stop() }, pool: enginePool, defaults: defaults)
         model.onCaptureChanged = { [weak self] in self?.captureChanged($0) }
         model.onSpeech = { [weak self] in self?.activity.speaking() }
         model.onUpdate = { [weak self] rows, selected in self?.showPick(rows, selected: selected) }
@@ -158,22 +175,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let channels: [Channel]
         if dictation.isActive { channels = [dictation.channel] }
         else if picker.isActive { channels = picker.rows.filter { $0.phase != .skipped }.map(\.channel) }
-        else if Channel.current == .all { channels = Channel.selectedMulti.filter { $0 != .offline || OfflineAssets.installed } }
-        else { channels = [Channel.current] }
+        else if Channel.current(in: defaults) == .all { channels = Channel.selectedMulti(in: defaults).filter { $0 != .offline || OfflineAssets.installed } }
+        else { channels = [Channel.current(in: defaults)] }
         for channel in channels { enginePool.prewarm(channel) }
     }
 
     private func captureChanged(_ recording: Bool) {
         self.recording = recording
         if recording { activity.start() }
-        else { activity.stop(); autoStop = false }
+        else {
+            activity.stop()
+            autoStop = false
+            if dictation.isActive || (picker.isActive && picker.sendsReturn) {
+                hud.showThinking()
+            } else { hud.hide() }
+        }
         setIcon(recording: recording)
     }
 
-    private func begin(autoStop: Bool = false, sendOnFinish: Bool = false) {
+    func begin(autoStop: Bool = false, sendOnFinish: Bool = false) {
         guard !meeting.isCapturing else { capture.disarm(); meetingPanel?.show(); return }
         guard !recording else { return }
-        if picker.isActive || (!dictation.isActive && Channel.current == .all) {
+        if picker.isActive || (!dictation.isActive && Channel.current(in: defaults) == .all) {
             let continuing = picker.isActive
             if !continuing {
                 caretAnchor = Caret.bounds()
@@ -181,7 +204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             do {
                 let skipped: Set<Channel> = OfflineAssets.installed ? [] : [.offline]
-                guard try picker.start(channels: Channel.selectedMulti, skipped: skipped, sendsReturn: sendOnFinish) else { return }
+                guard try picker.start(channels: Channel.selectedMulti(in: defaults), skipped: skipped, sendsReturn: sendOnFinish) else { return }
             } catch {
                 if !continuing { previousApp = nil }
                 fail("麦克风启动失败：\(error.localizedDescription)")
@@ -192,16 +215,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         let continuing = dictation.isActive
-        let streaming = continuing ? streamingNow : (UserDefaults.standard.object(forKey: "streaming") as? Bool ?? true)
+        let streaming = continuing ? streamingNow : (defaults.object(forKey: "streaming") as? Bool ?? true)
         do {
-            guard try dictation.start(channel: Channel.current, sendsReturn: sendOnFinish, streaming: streaming) else { return }
+            guard try dictation.start(channel: Channel.current(in: defaults), sendsReturn: sendOnFinish, streaming: streaming) else { return }
         } catch {
             fail("麦克风启动失败：\(error.localizedDescription)")
             return
         }
         if !continuing {
             streamingNow = streaming
-            streamTyper = streamingNow ? StreamTyper() : nil
+            streamTyper = streamingNow ? makeStreamTyper() : nil
         }
         self.autoStop = autoStop
         hud.show(dictation.text, listening: true)
@@ -213,15 +236,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !result.text.isEmpty { typer?.update(result.text) }
         typer?.finish()
         if let error = result.error {
-            if typer == nil, !result.text.isEmpty { TextInserter.insert(result.text) }
+            if typer == nil, !result.text.isEmpty { insertText(result.text, false) }
             let tail = result.text.isEmpty ? "" : "，已保留已识别的文字"
             fail("识别失败：\(error)\(tail)")
-        } else if result.text.isEmpty {
+        } else if result.text.isEmpty, typer == nil {
             hud.show("没有识别到内容", listening: false)
             hud.hide(after: 1)
         } else {
             hud.hide()
-            if typer == nil { TextInserter.insert(result.text, sendsReturn: result.sendsReturn) }
+            if typer == nil { insertText(result.text, result.sendsReturn) }
             else if result.sendsReturn { TextInserter.pressReturn(after: 0.08) }
         }
     }
@@ -239,8 +262,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let app = previousApp
         previousApp = nil
         app?.activate()
+        let insert = insertText
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-            TextInserter.insert(choice.text, sendsReturn: choice.sendsReturn)
+            insert(choice.text, choice.sendsReturn)
         }
     }
 
@@ -251,7 +275,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         app?.activate()
         if let message {
             if !text.isEmpty {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { TextInserter.insert(text) }
+                let insert = insertText
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { insert(text, false) }
             }
             fail(text.isEmpty ? message : "\(message)，已保留已识别的文字")
         } else { hud.hide() }
@@ -262,14 +287,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if activity.shouldStop(level: level, silence: Hotkey.silence, enabled: Hotkey.silenceStop) { end() }
     }
 
-    private func end() {
+    func end() {
         guard recording else { capture.disarm(); return }
         if dictation.isActive {
             dictation.end()
-            if dictation.isActive { hud.show("识别中…", listening: false) }
         } else if picker.isActive {
             picker.end()
-            if picker.isActive, picker.sendsReturn { hud.show("识别中…", listening: false) }
         }
     }
 
@@ -286,7 +309,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func setIcon(recording: Bool) {
-        statusItem.button?.image = NSImage(systemSymbolName: meeting.isCapturing ? "waveform.circle.fill" : recording ? "mic.fill" : "mic", accessibilityDescription: "OpenVoice")
+        statusItem?.button?.image = NSImage(systemSymbolName: meeting.isCapturing ? "waveform.circle.fill" : recording ? "mic.fill" : "mic", accessibilityDescription: "OpenVoice")
     }
 
     /// Bundle ID and the app-support directory changed with the OpenVoice rename.
