@@ -91,6 +91,18 @@ final class SettingsWindowTests: XCTestCase {
         return nil
     }
 
+    private func titles(_ element: NSObject) -> [String] {
+        var nativeTitles: [String] = []
+        if let button = element as? NSButton {
+            nativeTitles.append(button.title)
+        }
+        let values = [
+            attribute("accessibilityLabel", of: element) as? String,
+            attribute("accessibilityTitle", of: element) as? String,
+        ]
+        return values.compactMap { $0 } + nativeTitles
+    }
+
     private func role(_ element: NSObject) -> String? {
         attribute("accessibilityRole", of: element) as? String
     }
@@ -105,7 +117,8 @@ final class SettingsWindowTests: XCTestCase {
 
     private func press(_ label: String, in window: NSWindow) throws {
         let button = try XCTUnwrap(elements(in: window).first {
-            (self.label($0) == label || self.label($0)?.hasSuffix("、" + label) == true)
+            let labels = self.titles($0)
+            return labels.contains(label) || labels.contains { $0.hasSuffix("、" + label) }
                 && [NSAccessibility.Role.button.rawValue, NSAccessibility.Role.radioButton.rawValue].contains(role($0) ?? "")
         }, "Missing button: \(label). \(elements(in: window).map { "\(role($0) ?? "-"):\(self.label($0) ?? "-")" })")
         if !boolean("accessibilityPerformPress", of: button) {
