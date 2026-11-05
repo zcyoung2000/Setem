@@ -9,6 +9,7 @@ struct SettingsView: View {
     let defaults: UserDefaults
     var onResize: (CGFloat) -> Void = { _ in }
     @AppStorage("channel") private var channel = Channel.doubao.rawValue
+    @AppStorage("doubaoPunctuation") private var doubaoPunctuation = true
     @AppStorage("hotkey") private var hotkey = Hotkey.rightOption.rawValue
     @AppStorage("tapShortcut") private var tapShortcut = Shortcut.defaultRaw
     @AppStorage("meetingShortcut") private var meetingShortcut = Shortcut.meetingDefaultRaw
@@ -39,7 +40,8 @@ struct SettingsView: View {
     }
 
     private var contentHeight: CGFloat {
-        min(navigation.tab.contentHeight(multiChannel: channel == Channel.all.rawValue),
+        min(navigation.tab.contentHeight(multiChannel: channel == Channel.all.rawValue,
+                                         doubao: channel == Channel.doubao.rawValue),
             max(240, (NSScreen.main?.visibleFrame.height ?? 900) - 140))
     }
 
@@ -122,6 +124,18 @@ struct SettingsView: View {
                         .controlSize(.small)
                         .disabled(meeting.isCapturing)
                         .help(meeting.isCapturing ? "请先暂停会议录音，再测试识别渠道" : "录音一次，对比各渠道的识别结果")
+                }
+            }
+            if channel == Channel.doubao.rawValue {
+                Section {
+                    Toggle("自动添加标点", isOn: $doubaoPunctuation)
+                        .toggleStyle(.switch)
+                } header: {
+                    Text("豆包输入法")
+                } footer: {
+                    Text("关闭后，豆包转写不自动添加标点，包括句末标点。下次转写生效。")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
             if channel == Channel.all.rawValue {

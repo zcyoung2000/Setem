@@ -11,6 +11,8 @@ final class DoubaoEngine: ASREngine {
     private static let first: UInt64 = 1, middle: UInt64 = 3, last: UInt64 = 9
 
     func run(audio: AsyncStream<[Int16]>, partial: @escaping (String) -> Void) async throws -> String {
+        // Snapshot per run so reused engines pick up changes and retries keep the same option.
+        let punctuation = UserDefaults.standard.object(forKey: "doubaoPunctuation") as? Bool ?? true
         // Keep the complete recording so a rejected device can be replayed once with a new identity.
         let kept = FrameStore()
         let (live, source) = AsyncStream<[Int16]>.makeStream()
@@ -24,7 +26,7 @@ final class DoubaoEngine: ASREngine {
         defer { keeper.cancel() }
 
         do {
-            return try await Self.session(live, requireFinalResult: requireFinalResult, partial: partial)
+            return try await Self.session(live, requireFinalResult: requireFinalResult, punctuation: punctuation, partial: partial)
         } catch let rejection as SessionRejected {
             // Meeting mode owns the complete replay, including frames still being captured.
             if requireFinalResult { throw rejection }
@@ -36,7 +38,7 @@ final class DoubaoEngine: ASREngine {
                 }
             }
             do {
-                return try await Self.session(replay, requireFinalResult: false, partial: partial)
+                return try await Self.session(replay, requireFinalResult: false, punctuation: punctuation, partial: partial)
             } catch {
                 DoubaoDevice.reset()
                 throw ASRError("\(rejection.message)；换设备重试：\(error.localizedDescription)")
@@ -62,7 +64,7 @@ final class DoubaoEngine: ASREngine {
         }
     }
 
-    private static func session(_ audio: AsyncStream<[Int16]>, requireFinalResult: Bool, partial: @escaping (String) -> Void) async throws -> String {
+    private static func session(_ audio: AsyncStream<[Int16]>, requireFinalResult: Bool, punctuation: Bool, partial: @escaping (String) -> Void) async throws -> String {
         let pacedAudio = withLeadingSilence(audio)
         let device = try await DoubaoDevice.load()
         let rid = UUID().uuidString.lowercased()
@@ -77,7 +79,7 @@ final class DoubaoEngine: ASREngine {
             try await ws.send(Self.request(token: Self.appKey, method: "StartTask", rid: rid))
             try await Self.expect(ws, "TaskStarted")
             try await ws.send(Self.request(token: Self.appKey, method: "StartSession",
-                                           payload: Self.sessionConfig(did: device.did), rid: rid))
+                                           payload: Self.sessionConfig(did: device.did, punctuation: punctuation), rid: rid))
             try await Self.expect(ws, "SessionStarted")
         } catch {
             DoubaoDevice.reset()
@@ -162,10 +164,10 @@ final class DoubaoEngine: ASREngine {
         }
     }
 
-    private static func sessionConfig(did: String) -> String {
+    private static func sessionConfig(did: String, punctuation: Bool) -> String {
         let cfg: [String: Any] = [
             "audio_info": ["channel": 1, "format": "speech_opus", "sample_rate": 16000],
-            "enable_punctuation": true,
+            "enable_punctuation": punctuation,
             "enable_speech_rejection": true,
             "extra": ["app_name": "oime", "cell_compress_rate": 8, "did": did,
                       "enable_asr_threepass": false, "enable_asr_twopass": true, "input_mode": "stream"],
