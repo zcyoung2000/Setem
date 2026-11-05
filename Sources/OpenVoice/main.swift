@@ -71,13 +71,16 @@ if let i = args.firstIndex(of: "--preview-settings"), i + 1 < args.count {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         let model = MeetingSession()
-        let window = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(meeting: model)))
-        window.title = "OpenVoice 设置"
-        window.center()
+        let window = SettingsWindow(meeting: model)
+        if let index = args.firstIndex(of: "--settings-tab"), index + 1 < args.count,
+           let tab = SettingsTab(rawValue: args[index + 1]) {
+            window.navigation.tab = tab
+        }
+        window.appearance = NSAppearance(named: args.contains("--dark") ? .darkAqua : .aqua)
         window.orderFrontRegardless()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             do {
-                guard let view = window.contentView,
+                guard let view = window.contentView?.superview,
                       let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw ASRError("无法渲染设置") }
                 view.cacheDisplay(in: view.bounds, to: bitmap)
                 guard let png = bitmap.representation(using: .png, properties: [:]) else { throw ASRError("无法生成设置预览") }

@@ -433,13 +433,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func openSettings() {
-        if settingsWindow == nil {
-            let window = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(meeting: meeting)))
-            window.title = "OpenVoice 设置"
-            window.styleMask = [.titled, .closable]
-            window.isReleasedWhenClosed = false
-            window.center()
-            settingsWindow = window
+        if settingsWindow?.contentView == nil {
+            settingsWindow = SettingsWindow(meeting: meeting)
         }
         // Accessory apps need an explicit activation request before their key window
         // is allowed to rise above the current foreground application.
