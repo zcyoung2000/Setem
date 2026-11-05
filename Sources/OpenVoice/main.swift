@@ -77,8 +77,23 @@ if let i = args.firstIndex(of: "--preview-settings"), i + 1 < args.count {
             window.navigation.tab = tab
         }
         window.appearance = NSAppearance(named: args.contains("--dark") ? .darkAqua : .aqua)
+        let focused = args.contains("--focused")
         window.orderFrontRegardless()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+        if focused {
+            app.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                var pending = window.contentView?.superview.map { [$0] } ?? []
+                while let view = pending.popLast() {
+                    if let tabs = view as? NSSegmentedControl, tabs.segmentCount == SettingsTab.allCases.count {
+                        window.makeFirstResponder(tabs)
+                        break
+                    }
+                    pending.append(contentsOf: view.subviews)
+                }
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + (focused ? 2 : 0.5)) {
             do {
                 guard let view = window.contentView?.superview,
                       let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw ASRError("无法渲染设置") }

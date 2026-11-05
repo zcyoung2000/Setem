@@ -61,6 +61,7 @@ struct SettingsView: View {
                 .tabItem { Label("权限", systemImage: "lock.shield") }
                 .tag(SettingsTab.permission)
         }
+        .focusEffectDisabled()
         .frame(width: 700, height: contentHeight)
         .onAppear { onResize(contentHeight) }
         .onChange(of: contentHeight) { _, height in onResize(height) }
@@ -225,7 +226,7 @@ struct SettingsView: View {
                     Picker("提示框样式", selection: $hudStyle) {
                         ForEach(HUDStyle.allCases) { Text($0.title).tag($0.rawValue) }
                     }
-                    .labelsHidden().pickerStyle(.segmented).frame(width: 140)
+                    .labelsHidden().pickerStyle(.segmented).frame(width: 140, alignment: .trailing)
                 }
                 Picker("麦克风", selection: $micUID) {
                     Text("系统默认").tag("")
@@ -399,6 +400,7 @@ struct ChannelCompareSheet: View {
         }
         .padding(20)
         .frame(width: 460, height: 480)
+        .focusEffectDisabled()
         .onDisappear { compare.cancel() }
     }
 

@@ -4,6 +4,67 @@ import XCTest
 
 @MainActor
 final class SettingsWindowTests: XCTestCase {
+    private func nativeViews(in root: NSView) -> [NSView] {
+        [root] + root.subviews.flatMap { nativeViews(in: $0) }
+    }
+
+    func testFocusedNativeTabsDoNotDrawAnExteriorFocusRing() async throws {
+        _ = NSApplication.shared
+        let suite = "OpenVoice-SettingsFocus-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        for _ in 0..<2 {
+            let window = SettingsWindow(meeting: MeetingSession(), defaults: defaults)
+            defer { window.close() }
+            window.makeKeyAndOrderFront(nil)
+            try await settle(window)
+            let labels = ["识别渠道", "快捷键", "会议转写", "声音与界面", "权限"]
+            for (index, tab) in SettingsTab.allCases.enumerated() {
+                try press(labels[index], in: window)
+                try await settle(window)
+                let root = try XCTUnwrap(window.contentView?.superview)
+                let tabs = try XCTUnwrap(nativeViews(in: root).compactMap { $0 as? NSSegmentedControl }.first {
+                    $0.segmentCount == SettingsTab.allCases.count
+                })
+                XCTAssertTrue(tabs.acceptsFirstResponder)
+                XCTAssertTrue(window.makeFirstResponder(tabs))
+                XCTAssertTrue(window.firstResponder === tabs)
+                XCTAssertEqual(tabs.focusRingType, .none)
+                XCTAssertEqual(tabs.selectedSegment, index)
+                XCTAssertEqual(window.navigation.tab, tab)
+            }
+        }
+    }
+
+    func testComparisonSheetStillClosesWithEscapeAfterFocusingControls() async throws {
+        _ = NSApplication.shared
+        let suite = "OpenVoice-CompareFocus-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let window = SettingsWindow(meeting: MeetingSession(), defaults: defaults)
+        defer { window.close() }
+        window.makeKeyAndOrderFront(nil)
+        try await settle(window)
+        try press("渠道对比", in: window)
+        try await settle(window)
+        let sheet = try XCTUnwrap(window.attachedSheet)
+        let content = try XCTUnwrap(sheet.contentView)
+        let control = try XCTUnwrap(nativeViews(in: content).first { $0.acceptsFirstResponder })
+        XCTAssertTrue(sheet.makeFirstResponder(control))
+        XCTAssertTrue(sheet.firstResponder === control)
+        sheet.sendEvent(try keyEvent("\u{1B}", code: 53, in: sheet))
+        try await settle(window)
+        XCTAssertNil(window.attachedSheet)
+    }
+
+    private func keyEvent(_ characters: String, code: UInt16, in window: NSWindow) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                                      timestamp: ProcessInfo.processInfo.systemUptime,
+                                      windowNumber: window.windowNumber, context: nil,
+                                      characters: characters, charactersIgnoringModifiers: characters,
+                                      isARepeat: false, keyCode: code))
+    }
+
     private func attribute(_ name: String, of element: NSObject) -> Any? {
         let selector = NSSelectorFromString(name)
         guard element.responds(to: selector) else { return nil }

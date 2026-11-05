@@ -43,6 +43,8 @@
 
 ## 执行与维护
 
+默认门禁同时包含 [设置界面回归](settings-ui-baseline.md) 的 SettingsWindowTests，覆盖原生标签焦点环与设置交互；语音/音频用例的范围与行为保持原有约定。
+
 ```bash
 ./Scripts/test.sh
 # 仅定位语音输入回归：依赖已准备好后运行
