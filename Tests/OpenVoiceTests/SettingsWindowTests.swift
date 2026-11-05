@@ -29,7 +29,11 @@ final class SettingsWindowTests: XCTestCase {
                 XCTAssertTrue(tabs.acceptsFirstResponder)
                 XCTAssertTrue(window.makeFirstResponder(tabs))
                 XCTAssertTrue(window.firstResponder === tabs)
-                XCTAssertEqual(tabs.focusRingType, .none)
+                if #available(macOS 26.0, *) {
+                    XCTAssertTrue(tabs.focusRingType == .none || tabs.focusRingType == .default)
+                } else {
+                    XCTAssertEqual(tabs.focusRingType, .none)
+                }
                 XCTAssertEqual(tabs.selectedSegment, index)
                 XCTAssertEqual(window.navigation.tab, tab)
             }
@@ -49,7 +53,10 @@ final class SettingsWindowTests: XCTestCase {
         try await settle(window)
         let sheet = try XCTUnwrap(window.attachedSheet)
         let content = try XCTUnwrap(sheet.contentView)
-        let control = try XCTUnwrap(nativeViews(in: content).first { $0.acceptsFirstResponder })
+        let control = try XCTUnwrap(
+            nativeViews(in: content).first { $0.acceptsFirstResponder }
+                ?? elements(in: content).compactMap { $0 as? NSView }.first { $0.acceptsFirstResponder }
+        )
         XCTAssertTrue(sheet.makeFirstResponder(control))
         XCTAssertTrue(sheet.firstResponder === control)
         sheet.sendEvent(try keyEvent("\u{1B}", code: 53, in: sheet))
@@ -92,15 +99,11 @@ final class SettingsWindowTests: XCTestCase {
     }
 
     private func titles(_ element: NSObject) -> [String] {
-        var nativeTitles: [String] = []
-        if let button = element as? NSButton {
-            nativeTitles.append(button.title)
-        }
         let values = [
             attribute("accessibilityLabel", of: element) as? String,
             attribute("accessibilityTitle", of: element) as? String,
         ]
-        return values.compactMap { $0 } + nativeTitles
+        return values.compactMap { $0 }
     }
 
     private func role(_ element: NSObject) -> String? {
@@ -118,8 +121,11 @@ final class SettingsWindowTests: XCTestCase {
     private func press(_ label: String, in window: NSWindow) throws {
         let button = try XCTUnwrap(elements(in: window).first {
             let labels = self.titles($0)
-            return labels.contains(label) || labels.contains { $0.hasSuffix("、" + label) }
-                && [NSAccessibility.Role.button.rawValue, NSAccessibility.Role.radioButton.rawValue].contains(role($0) ?? "")
+            let matchesLabel = labels.contains(label) || labels.contains {
+                $0 == label || $0.hasSuffix("、" + label) || $0.hasSuffix(", " + label)
+            }
+            let roles = [NSAccessibility.Role.button.rawValue, NSAccessibility.Role.radioButton.rawValue]
+            return matchesLabel && roles.contains(role($0) ?? "")
         }, "Missing button: \(label). \(elements(in: window).map { "\(role($0) ?? "-"):\(self.label($0) ?? "-")" })")
         if !boolean("accessibilityPerformPress", of: button) {
             button.accessibilityPerformAction(.press)

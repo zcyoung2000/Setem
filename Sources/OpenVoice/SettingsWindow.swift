@@ -22,18 +22,6 @@ final class SettingsNavigation: ObservableObject {
     @Published var tab = SettingsTab.channel
 }
 
-final class SettingsHostingView: NSHostingView<AnyView> {
-    override func layout() {
-        super.layout()
-        disableFocusRings(in: self)
-    }
-
-    private func disableFocusRings(in view: NSView) {
-        view.focusRingType = .none
-        view.subviews.forEach(disableFocusRings)
-    }
-}
-
 @MainActor
 final class SettingsWindow: NSWindow {
     let navigation = SettingsNavigation()
@@ -49,7 +37,7 @@ final class SettingsWindow: NSWindow {
         let settings = SettingsView(meeting: meeting, navigation: navigation, defaults: defaults) { [weak self] height in
             self?.resizeContent(to: height)
         }
-        contentView = SettingsHostingView(rootView: AnyView(settings.defaultAppStorage(defaults)))
+        contentView = NSHostingView(rootView: AnyView(settings.defaultAppStorage(defaults)))
         center()
         setFrameAutosaveName("OpenVoiceSettings")
     }
