@@ -10,6 +10,18 @@ if args.count >= 3, args[1] == "--offline-worker" {
 }
 signal(SIGPIPE, SIG_IGN) // 离线子进程退出后写管道不应杀死主进程
 
+if let i = args.firstIndex(of: "--benchmark-performance"), i + 1 < args.count {
+    MainActor.assumeIsolated {
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+        Task {
+            do { try await startPerformanceBenchmark(directory: URL(fileURLWithPath: args[i + 1], isDirectory: true)) }
+            catch { fputs("\(error)\n", stderr); exit(1) }
+        }
+        app.run()
+    }
+}
+
 if let i = args.firstIndex(of: "--test"), i + 2 < args.count {
     // OpenVoice --test doubao|wetype|offline file.wav [--type]（--type：完整定稿后一次性输入）
     let engine: ASREngine = switch args[i + 1] {
