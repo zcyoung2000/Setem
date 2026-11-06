@@ -4,6 +4,24 @@ import XCTest
 
 @MainActor
 final class QwenInboxTests: XCTestCase {
+    func testBufferedPacketsRemainOrderedAcrossCancellationAndTerminalError() async throws {
+        let inbox = QwenInbox()
+        for i in 0..<2000 { await inbox.push(Data(String(i).utf8)) }
+        let cancelled = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await inbox.read(timeout: 1)
+        }
+        do { _ = try await cancelled.value; XCTFail("Cancelled reader consumed a buffered packet") }
+        catch is CancellationError {}
+        await inbox.finish(ASRError("连接已关闭"))
+        for i in 0..<2000 {
+            let data = try await inbox.read(timeout: 1)
+            XCTAssertEqual(String(decoding: data, as: UTF8.self), String(i))
+        }
+        do { _ = try await inbox.read(timeout: 1); XCTFail("Closed queue accepted a read") }
+        catch { XCTAssertEqual(error.localizedDescription, "连接已关闭") }
+    }
+
     func testCancelledQwenReadCannotConsumeNextRound() async throws {
         let clock = ParityClock()
         let inbox = QwenInbox(sleep: { try await clock.sleep($0) })

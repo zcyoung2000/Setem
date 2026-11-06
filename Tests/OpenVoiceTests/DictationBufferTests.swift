@@ -111,6 +111,29 @@ final class DictationBufferTests: XCTestCase {
     }
 
     @MainActor
+    func testHUDAndTranscriptReleaseWhenDiscardedDuringAnimation() async throws {
+        _ = NSApplication.shared
+        weak var releasedHUD: HUD?
+        weak var releasedText: NSTextView?
+        autoreleasepool {
+            let hud = HUD(reduceMotion: { false })
+            releasedHUD = hud
+            hud.show(String(repeating: "用于检查释放的预览文字。", count: 500), listening: true)
+            hud.showThinking()
+            hud.hide()
+            hud.show("退出中重新录音。", listening: true)
+            var pending = hud.windowForDiagnostics.contentView.map { [$0] } ?? []
+            while let view = pending.popLast() {
+                if let text = view as? NSTextView { releasedText = text; break }
+                pending.append(contentsOf: view.subviews)
+            }
+            XCTAssertNotNil(releasedText)
+        }
+        XCTAssertNil(releasedHUD, "Resize, status and exit timers must not keep the HUD alive")
+        try await parityEventually { releasedText == nil }
+    }
+
+    @MainActor
     func testIncrementalPreviewRetainsExactUnicodeAcrossGraphemeRevisions() throws {
         _ = NSApplication.shared
         let view = DictationPreviewTextView()

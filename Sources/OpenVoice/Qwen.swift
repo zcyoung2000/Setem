@@ -74,9 +74,10 @@ final class QwenEngine: ASREngine {
 
         do {
             var pcm = Data()
+            pcm.reserveCapacity(3840)
             for await frame in audio {
                 try Task.checkCancellation()
-                pcm.append(contentsOf: frame.withUnsafeBufferPointer { Data(buffer: $0) })
+                frame.withUnsafeBytes { pcm.append(contentsOf: $0) }
                 while pcm.count >= 3840 {
                     let chunk = Data(pcm.prefix(3840))
                     pcm = Data(pcm.dropFirst(3840))

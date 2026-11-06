@@ -13,7 +13,7 @@ actor QwenInbox {
         let continuation: CheckedContinuation<Data, Error>
         let timer: Task<Void, Never>
     }
-    private var chunks: [Data] = []
+    private var chunks = FIFOBuffer<Data>()
     private var waiter: Waiter?
     private var terminal: Error?
     private let sleep: (TimeInterval) async throws -> Void
@@ -45,7 +45,7 @@ actor QwenInbox {
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 if Task.isCancelled { continuation.resume(throwing: CancellationError()); return }
-                if !chunks.isEmpty { continuation.resume(returning: chunks.removeFirst()); return }
+                if let chunk = chunks.popFirst() { continuation.resume(returning: chunk); return }
                 if let terminal { continuation.resume(throwing: terminal); return }
                 guard waiter == nil else { continuation.resume(throwing: ASRError("千问连接存在并发读取")); return }
                 let sleep = self.sleep

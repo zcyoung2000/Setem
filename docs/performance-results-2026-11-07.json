@@ -1,0 +1,184 @@
+{
+  "date": "2026-11-07",
+  "method": "Three alternating release runs per variant on the same Mac; fixed synthetic workload; no microphone or provider connections",
+  "runs": {
+    "before": [
+      {
+        "audioChecksum": 565579051,
+        "audioFrames": 8534,
+        "conversionMilliseconds": 23.59875000001921,
+        "heartbeatMaxMilliseconds": 75.76658333346131,
+        "heartbeatP95Milliseconds": 47.07800000142015,
+        "hudCharacters": 6432,
+        "hudUpdateP50Milliseconds": 21.44354166739504,
+        "hudUpdateP95Milliseconds": 51.17416666689678,
+        "hudUpdates": 180,
+        "hudWallSeconds": 7.906168666666417,
+        "mixedChecksum": 300000000,
+        "mixingMilliseconds": 57.10095833455853,
+        "packetChecksum": 3742140,
+        "packetQueueMilliseconds": 1895.710708333354,
+        "packets": 30000,
+        "wallSeconds": 12.02,
+        "cpuSeconds": 6.640000000000001,
+        "maxResidentBytes": 129826816,
+        "peakFootprintBytes": 60392576
+      },
+      {
+        "audioChecksum": 565579051,
+        "audioFrames": 8534,
+        "conversionMilliseconds": 21.516875000088476,
+        "heartbeatMaxMilliseconds": 71.31104166728619,
+        "heartbeatP95Milliseconds": 41.713958333275514,
+        "hudCharacters": 6432,
+        "hudUpdateP50Milliseconds": 21.31441666642786,
+        "hudUpdateP95Milliseconds": 51.348750001125154,
+        "hudUpdates": 180,
+        "hudWallSeconds": 7.9058692083326605,
+        "mixedChecksum": 300000000,
+        "mixingMilliseconds": 56.31033333338564,
+        "packetChecksum": 3742140,
+        "packetQueueMilliseconds": 927.9611249985464,
+        "packets": 30000,
+        "wallSeconds": 10.91,
+        "cpuSeconds": 6.22,
+        "maxResidentBytes": 130023424,
+        "peakFootprintBytes": 60425296
+      },
+      {
+        "audioChecksum": 565579051,
+        "audioFrames": 8534,
+        "conversionMilliseconds": 24.08304166601738,
+        "heartbeatMaxMilliseconds": 86.68270833368297,
+        "heartbeatP95Milliseconds": 47.51866666629212,
+        "hudCharacters": 6432,
+        "hudUpdateP50Milliseconds": 21.81383333299891,
+        "hudUpdateP95Milliseconds": 55.32337499971618,
+        "hudUpdates": 180,
+        "hudWallSeconds": 7.988260208334395,
+        "mixedChecksum": 300000000,
+        "mixingMilliseconds": 56.64699999942968,
+        "packetChecksum": 3742140,
+        "packetQueueMilliseconds": 1154.0162916662666,
+        "packets": 30000,
+        "wallSeconds": 11.24,
+        "cpuSeconds": 6.5600000000000005,
+        "maxResidentBytes": 127287296,
+        "peakFootprintBytes": 70354024
+      }
+    ],
+    "after": [
+      {
+        "audioChecksum": 565579051,
+        "audioFrames": 8534,
+        "conversionMilliseconds": 10.722250000981148,
+        "heartbeatMaxMilliseconds": 35.048583333264105,
+        "heartbeatP95Milliseconds": 29.52124999865191,
+        "hudCharacters": 6432,
+        "hudUpdateP50Milliseconds": 11.990416665867087,
+        "hudUpdateP95Milliseconds": 18.777166666041012,
+        "hudUpdates": 180,
+        "hudWallSeconds": 7.220544166668333,
+        "mixedChecksum": 300000000,
+        "mixingMilliseconds": 42.55633333377773,
+        "packetChecksum": 3742140,
+        "packetQueueMilliseconds": 629.9977083326667,
+        "packets": 30000,
+        "wallSeconds": 10.26,
+        "cpuSeconds": 4.06,
+        "maxResidentBytes": 124436480,
+        "peakFootprintBytes": 55362664
+      },
+      {
+        "audioChecksum": 565579051,
+        "audioFrames": 8534,
+        "conversionMilliseconds": 10.531791667744983,
+        "heartbeatMaxMilliseconds": 35.22270833309449,
+        "heartbeatP95Milliseconds": 28.762458332494134,
+        "hudCharacters": 6432,
+        "hudUpdateP50Milliseconds": 11.817541666459874,
+        "hudUpdateP95Milliseconds": 18.753083333649556,
+        "hudUpdates": 180,
+        "hudWallSeconds": 7.219341916666963,
+        "mixedChecksum": 300000000,
+        "mixingMilliseconds": 42.6291666663019,
+        "packetChecksum": 3742140,
+        "packetQueueMilliseconds": 641.1630000002333,
+        "packets": 30000,
+        "wallSeconds": 9.9,
+        "cpuSeconds": 4.01,
+        "maxResidentBytes": 124551168,
+        "peakFootprintBytes": 55460944
+      },
+      {
+        "audioChecksum": 565579051,
+        "audioFrames": 8534,
+        "conversionMilliseconds": 10.74795833301323,
+        "heartbeatMaxMilliseconds": 35.99920833403303,
+        "heartbeatP95Milliseconds": 28.873791667137993,
+        "hudCharacters": 6432,
+        "hudUpdateP50Milliseconds": 12.02779166669643,
+        "hudUpdateP95Milliseconds": 18.931624999822816,
+        "hudUpdates": 180,
+        "hudWallSeconds": 7.2200307916664315,
+        "mixedChecksum": 300000000,
+        "mixingMilliseconds": 42.79016666623647,
+        "packetChecksum": 3742140,
+        "packetQueueMilliseconds": 570.9465833333525,
+        "packets": 30000,
+        "wallSeconds": 9.87,
+        "cpuSeconds": 4.04,
+        "maxResidentBytes": 127107072,
+        "peakFootprintBytes": 59507792
+      }
+    ]
+  },
+  "summary": {
+    "hudUpdateP95Milliseconds": {
+      "before": 51.348750001125154,
+      "after": 18.777166666041012,
+      "reductionPercent": 63.432086144980026
+    },
+    "hudUpdateP50Milliseconds": {
+      "before": 21.44354166739504,
+      "after": 11.990416665867087,
+      "reductionPercent": 44.08378591630436
+    },
+    "heartbeatP95Milliseconds": {
+      "before": 47.07800000142015,
+      "after": 28.873791667137993,
+      "reductionPercent": 38.66818542362252
+    },
+    "packetQueueMilliseconds": {
+      "before": 1154.0162916662666,
+      "after": 629.9977083326667,
+      "reductionPercent": 45.40824831657944
+    },
+    "conversionMilliseconds": {
+      "before": 23.59875000001921,
+      "after": 10.722250000981148,
+      "reductionPercent": 54.564330733736234
+    },
+    "mixingMilliseconds": {
+      "before": 56.64699999942968,
+      "after": 42.6291666663019,
+      "reductionPercent": 24.745941238316085
+    },
+    "cpuSeconds": {
+      "before": 6.5600000000000005,
+      "after": 4.04,
+      "reductionPercent": 38.41463414634147
+    },
+    "maxResidentBytes": {
+      "before": 129826816,
+      "after": 124551168,
+      "reductionPercent": 4.063604240282685
+    },
+    "peakFootprintBytes": {
+      "before": 60425296,
+      "after": 55460944,
+      "reductionPercent": 8.215685033632273
+    },
+    "checksumsAndWorkloadsMatch": true
+  }
+}

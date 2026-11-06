@@ -148,7 +148,7 @@ final class OfflineWorker: @unchecked Sendable {
     private var input: FileHandle?
     private var output: FileHandle?
     private var buffer = Data()
-    private var generation = 0
+    private var idleTimer: ResettableIdleTimer?
 
     func shutdown() async {
         await withCheckedContinuation { continuation in
@@ -166,7 +166,6 @@ final class OfflineWorker: @unchecked Sendable {
 
     func prewarm() {
         queue.async { [self] in
-            generation += 1
             if process?.isRunning != true { try? launch() }
             scheduleIdle()
         }
@@ -184,7 +183,6 @@ final class OfflineWorker: @unchecked Sendable {
     }
 
     private func callSync(_ op: String, b64: String?) throws -> String {
-        generation += 1
         if process?.isRunning != true { try launch() }
         var req: [String: Any] = ["op": op]
         if let b64 { req["b64"] = b64 }
@@ -231,18 +229,24 @@ final class OfflineWorker: @unchecked Sendable {
     }
 
     private func stop() {
+        idleTimer = nil
         if let p = process {
             kill(p.processIdentifier, SIGKILL)
             p.waitUntilExit()
         }
         processLock.withLock { process = nil }
+        try? input?.close()
+        try? output?.close()
         input = nil
         output = nil
+        buffer.removeAll()
     }
 
     private func scheduleIdle() {
-        let g = generation
-        queue.asyncAfter(deadline: .now() + 300) { [self] in if g == generation { stop() } }
+        if idleTimer == nil {
+            idleTimer = ResettableIdleTimer(queue: queue) { [weak self] in self?.stop() }
+        }
+        idleTimer?.schedule(after: 300)
     }
 }
 

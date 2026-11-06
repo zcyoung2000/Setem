@@ -68,7 +68,7 @@ final class MeetingSession: ObservableObject {
 
     var isCapturing: Bool { exiting || [.starting, .restoring, .recording, .pausing, .stopping].contains(phase) }
     var hasOpenMeeting: Bool { phase == .paused || isCapturing }
-    var pendingCount: Int { record.segments.filter { $0.state != .complete }.count }
+    var pendingCount: Int { record.segments.reduce(0) { $0 + ($1.state == .complete ? 0 : 1) } }
     var provider: String { record.segments.last(where: { $0.state == .transcribing || $0.state == .retrying })?.provider ?? record.segments.last?.provider ?? "自动回退" }
     var status: String {
         switch phase {

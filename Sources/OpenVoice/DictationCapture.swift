@@ -5,7 +5,7 @@ import Foundation
 @MainActor
 final class DictationCapture {
     private final class Run {
-        var frames: [[Int16]] = []
+        var frames = FIFOBuffer<[Int16]>()
         var output: AsyncStream<[Int16]>.Continuation?
         var forwarding = false
         var discarded = false
@@ -35,12 +35,12 @@ final class DictationCapture {
                 if run.forwarding { run.output?.yield(frame) }
                 else {
                     run.frames.append(frame)
-                    if run.frames.count > limit { run.frames.removeFirst(run.frames.count - limit) }
+                    while run.frames.count > limit { _ = run.frames.popFirst() }
                 }
             }
             run.output?.finish()
             run.output = nil
-            run.frames = []
+            run.frames = FIFOBuffer()
             run.pump = nil
         }
     }
@@ -51,8 +51,7 @@ final class DictationCapture {
         let (stream, output) = AsyncStream<[Int16]>.makeStream()
         run.output = output
         run.forwarding = true
-        for frame in run.frames { output.yield(frame) }
-        run.frames = []
+        while let frame = run.frames.popFirst() { output.yield(frame) }
         return stream
     }
 

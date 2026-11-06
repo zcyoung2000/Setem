@@ -5,6 +5,7 @@ import ScreenCaptureKit
 /// Timestamped 20 ms buckets. Both SCStream outputs use the host clock; a delayed source
 /// must not shift all subsequent speech or make the faster source run twice as fast.
 struct MeetingAudioMixer {
+    private static let silence = [Int16](repeating: 0, count: FrameConverter.frame)
     private var buckets: [Int: [Int32]] = [:]
     private(set) var cursor = 0
     private(set) var latest = 0
@@ -12,7 +13,7 @@ struct MeetingAudioMixer {
     mutating func add(_ frame: [Int16], at index: Int) throws {
         guard index >= 0 else { return } // samples predating the capture start
         guard index >= cursor else { throw ASRError("收音数据延迟过大，会议已停止以避免静默漏录") }
-        var mixed = buckets[index] ?? [Int32](repeating: 0, count: FrameConverter.frame)
+        var mixed = buckets.removeValue(forKey: index) ?? [Int32](repeating: 0, count: FrameConverter.frame)
         for i in frame.indices { mixed[i] += Int32(frame[i]) }
         buckets[index] = mixed
         latest = max(latest, index + 1)
@@ -21,9 +22,10 @@ struct MeetingAudioMixer {
     mutating func drain(until end: Int) -> [[Int16]] {
         guard end > cursor else { return [] }
         var frames: [[Int16]] = []
+        frames.reserveCapacity(end - cursor)
         for index in cursor..<end {
             let mixed = buckets.removeValue(forKey: index)
-            frames.append(mixed?.map { Int16(clamping: $0) } ?? [Int16](repeating: 0, count: FrameConverter.frame))
+            frames.append(mixed?.map { Int16(clamping: $0) } ?? Self.silence)
         }
         cursor = end
         return frames

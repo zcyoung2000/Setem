@@ -13,6 +13,11 @@ final class DoubaoEngine: ASREngine {
     func run(audio: AsyncStream<[Int16]>, partial: @escaping (String) -> Void) async throws -> String {
         // Snapshot per run so reused engines pick up changes and retries keep the same option.
         let punctuation = UserDefaults.standard.object(forKey: "doubaoPunctuation") as? Bool ?? true
+        // MeetingPipeline already owns the durable replay. Avoid retaining the
+        // entire segment a second time while strict final recognition is running.
+        if requireFinalResult {
+            return try await Self.session(audio, requireFinalResult: true, punctuation: punctuation, partial: partial)
+        }
         // Keep the complete recording so a rejected device can be replayed once with a new identity.
         let kept = FrameStore()
         let (live, source) = AsyncStream<[Int16]>.makeStream()
@@ -28,8 +33,6 @@ final class DoubaoEngine: ASREngine {
         do {
             return try await Self.session(live, requireFinalResult: requireFinalResult, punctuation: punctuation, partial: partial)
         } catch let rejection as SessionRejected {
-            // Meeting mode owns the complete replay, including frames still being captured.
-            if requireFinalResult { throw rejection }
             DoubaoDevice.reset()
             let replay = AsyncStream<[Int16]> { cont in
                 Task {

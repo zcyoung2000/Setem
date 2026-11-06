@@ -55,7 +55,8 @@ final class FrameConverter {
     static let frame = 320
     static let format = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: true)!
     private let converter: AVAudioConverter
-    private var pending: [Int16] = []
+    private var pending = AudioFrameBuffer()
+    private var output: AVAudioPCMBuffer?
 
     init(from input: AVAudioFormat) throws {
         guard let c = AVAudioConverter(from: input, to: Self.format) else { throw ASRError("不支持的音频格式") }
@@ -64,7 +65,14 @@ final class FrameConverter {
 
     func push(_ buffer: AVAudioPCMBuffer) -> [[Int16]] {
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * 16000 / buffer.format.sampleRate) + 64
-        guard let out = AVAudioPCMBuffer(pcmFormat: Self.format, frameCapacity: capacity) else { return [] }
+        let out: AVAudioPCMBuffer
+        if let cached = output, cached.frameCapacity >= capacity { out = cached }
+        else {
+            guard let allocated = AVAudioPCMBuffer(pcmFormat: Self.format, frameCapacity: capacity) else { return [] }
+            output = allocated
+            out = allocated
+        }
+        out.frameLength = 0
         var fed = false
         _ = converter.convert(to: out, error: nil) { _, status in
             if fed {
@@ -75,20 +83,12 @@ final class FrameConverter {
             status.pointee = .haveData
             return buffer
         }
-        pending += UnsafeBufferPointer(start: out.int16ChannelData![0], count: Int(out.frameLength))
-        var frames: [[Int16]] = []
-        while pending.count >= Self.frame {
-            frames.append(Array(pending.prefix(Self.frame)))
-            pending.removeFirst(Self.frame)
-        }
-        return frames
+        return pending.push(UnsafeBufferPointer(start: out.int16ChannelData![0], count: Int(out.frameLength)))
     }
 
     /// 不足一帧的尾巴补零
     func flush() -> [Int16]? {
-        guard !pending.isEmpty else { return nil }
-        defer { pending = [] }
-        return pending + [Int16](repeating: 0, count: Self.frame - pending.count)
+        pending.flush()
     }
 }
 
@@ -96,7 +96,7 @@ final class FrameConverter {
 final class Recorder {
     private let callbackQueue = DispatchQueue(label: "openvoice.recorder")
     private var queue: AudioQueueRef?
-    private var pending: [Int16] = []
+    private var pending = AudioFrameBuffer()
     private var continuation: AsyncStream<[Int16]>.Continuation?
     /// 每 20ms 帧的音量（0...1），在采集队列回调
     var onLevel: ((Float) -> Void)?
@@ -112,12 +112,10 @@ final class Recorder {
         let status = AudioQueueNewInputWithDispatchQueue(&q, &format, 0, callbackQueue) { [weak self] q, buffer, _, _, _ in
             guard let self, let continuation = self.continuation else { return }
             let count = Int(buffer.pointee.mAudioDataByteSize) / 2
-            self.pending += UnsafeBufferPointer(start: buffer.pointee.mAudioData.assumingMemoryBound(to: Int16.self), count: count)
-            while self.pending.count >= FrameConverter.frame {
-                let frame = Array(self.pending.prefix(FrameConverter.frame))
+            let samples = UnsafeBufferPointer(start: buffer.pointee.mAudioData.assumingMemoryBound(to: Int16.self), count: count)
+            for frame in self.pending.push(samples) {
                 continuation.yield(frame)
                 self.onLevel?(Recorder.level(frame))
-                self.pending.removeFirst(FrameConverter.frame)
             }
             AudioQueueEnqueueBuffer(q, buffer, 0, nil)
         }
@@ -133,7 +131,7 @@ final class Recorder {
             if let buffer { AudioQueueEnqueueBuffer(q, buffer, 0, nil) }
         }
         callbackQueue.sync {
-            pending = []
+            pending = AudioFrameBuffer()
             continuation = cont
         }
         let started = AudioQueueStart(q, nil)
@@ -159,10 +157,8 @@ final class Recorder {
         queue = nil
         AudioQueueStop(q, true)
         callbackQueue.sync {
-            if !pending.isEmpty {
-                continuation?.yield(pending + [Int16](repeating: 0, count: FrameConverter.frame - pending.count))
-            }
-            pending = []
+            if let tail = pending.flush() { continuation?.yield(tail) }
+            pending = AudioFrameBuffer()
             continuation?.finish()
             continuation = nil
         }
