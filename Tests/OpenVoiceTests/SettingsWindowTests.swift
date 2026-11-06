@@ -162,14 +162,17 @@ final class SettingsWindowTests: XCTestCase {
 
     private func press(_ label: String, in window: NSWindow) throws {
         let button = try XCTUnwrap(elements(in: window).first {
-            let labels = self.titles($0)
+            let labels = self.titles($0) + [self.label($0)].compactMap { $0 }
             let matchesLabel = labels.contains(label) || labels.contains {
                 $0 == label || $0.hasSuffix("、" + label) || $0.hasSuffix(", " + label)
             }
-            let roles = [NSAccessibility.Role.button.rawValue, NSAccessibility.Role.radioButton.rawValue]
+            let roles = [NSAccessibility.Role.button.rawValue, NSAccessibility.Role.radioButton.rawValue,
+                         NSAccessibility.Role.checkBox.rawValue, "AXSwitch"]
             return matchesLabel && roles.contains(role($0) ?? "")
         }, "Missing button: \(label). \(elements(in: window).map { "\(role($0) ?? "-"):\(self.label($0) ?? "-")" })")
-        if !boolean("accessibilityPerformPress", of: button) {
+        if let control = button as? NSSwitch {
+            control.performClick(nil)
+        } else if !boolean("accessibilityPerformPress", of: button) {
             button.accessibilityPerformAction(.press)
         }
     }
@@ -268,6 +271,33 @@ final class SettingsWindowTests: XCTestCase {
         try press("标准", in: reopened)
         try await settle(reopened)
         try await parityEventually { abs(hud.windowForDiagnostics.frame.width - standard.width) < 1 }
+    }
+
+    func testTrailingPunctuationSwitchPersistsAndCanBeTurnedOffAfterReopening() async throws {
+        _ = NSApplication.shared
+        let suite = "OpenVoice-OutputSetting-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let window = SettingsWindow(meeting: MeetingSession(), defaults: defaults)
+        window.navigation.tab = .audio
+        window.makeKeyAndOrderFront(nil)
+        try await settle(window)
+        XCTAssertFalse(defaults.bool(forKey: DictationOutput.removeTrailingPunctuationKey))
+        try press("去除末尾标点", in: window)
+        try await settle(window)
+        XCTAssertTrue(defaults.bool(forKey: DictationOutput.removeTrailingPunctuationKey))
+        XCTAssertEqual(DictationOutput.textForInsertion("你好。", defaults: defaults), "你好")
+        window.close()
+        let reopened = SettingsWindow(meeting: MeetingSession(), defaults: defaults)
+        defer { reopened.close() }
+        reopened.navigation.tab = .audio
+        reopened.makeKeyAndOrderFront(nil)
+        try await settle(reopened)
+        XCTAssertTrue(defaults.bool(forKey: DictationOutput.removeTrailingPunctuationKey))
+        try press("去除末尾标点", in: reopened)
+        try await settle(reopened)
+        XCTAssertFalse(defaults.bool(forKey: DictationOutput.removeTrailingPunctuationKey))
+        XCTAssertEqual(DictationOutput.textForInsertion("你好。", defaults: defaults), "你好。")
     }
 
     func testLeavingShortcutPageAndClosingWindowReleaseKeyboardMonitor() async throws {

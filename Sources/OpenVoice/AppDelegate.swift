@@ -30,7 +30,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         self.enginePool = enginePool ?? DictationEnginePool()
         self.hud = hud ?? HUD()
         self.defaults = defaults
-        self.insertText = insertText
+        self.insertText = { text, sendsReturn in
+            let output = DictationOutput.textForInsertion(text, defaults: defaults)
+            guard !output.isEmpty else { return }
+            insertText(output, sendsReturn)
+        }
         super.init()
         Channel.migrateLegacySelection(in: defaults)
     }

@@ -11,7 +11,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .channel: doubao ? 430 : 330
         case .hotkey: 360
         case .meeting: 210
-        case .audio: 220
+        case .audio: 280
         case .permission: 250
         }
     }

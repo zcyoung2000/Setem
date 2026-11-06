@@ -38,7 +38,10 @@ if let i = args.firstIndex(of: "--test"), i + 2 < args.count {
                 print("…", partial)
             }
             if args.contains("--type"), !text.isEmpty {
-                await MainActor.run { TextInserter.insert(text) }
+                await MainActor.run {
+                    let output = DictationOutput.textForInsertion(text)
+                    if !output.isEmpty { TextInserter.insert(output) }
+                }
                 try await Task.sleep(for: .milliseconds(600)) // Let paste and clipboard restoration finish.
             }
             print("FINAL:", text, String(format: "(%.2fs)", Date().timeIntervalSince(start)))

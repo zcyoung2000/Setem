@@ -17,6 +17,7 @@ struct SettingsView: View {
     @AppStorage("silence") private var silence = 1.5
     @AppStorage("silenceStop") private var silenceStop = true
     @AppStorage("hudStyle") private var hudStyle = HUDStyle.compact.rawValue
+    @AppStorage(DictationOutput.removeTrailingPunctuationKey) private var removeTrailingPunctuation = false
     @AppStorage("micUID") private var micUID = ""
     @State private var microphones = Microphone.all()
     @ObservedObject private var offline = OfflineAssets.shared
@@ -207,6 +208,8 @@ struct SettingsView: View {
                     }
                     .labelsHidden().pickerStyle(.segmented).frame(width: 140, alignment: .trailing)
                 }
+                Toggle("去除末尾标点", isOn: $removeTrailingPunctuation)
+                    .toggleStyle(.switch)
                 Picker("麦克风", selection: $micUID) {
                     Text("系统默认").tag("")
                     ForEach(microphones) { Text($0.name).tag($0.id) }
@@ -217,7 +220,7 @@ struct SettingsView: View {
             } header: {
                 Text("声音与界面")
             } footer: {
-                Text("紧凑使用较小的浮窗与字号，标准提供更宽的预览。识别结果定稿后一次性输入。")
+                Text("紧凑使用较小的浮窗与字号，标准提供更宽的预览。识别结果定稿后一次性输入。\n开启去除末尾标点后，仅移除最终输入文本末尾的一个标点，保留句中标点。")
                     .font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
