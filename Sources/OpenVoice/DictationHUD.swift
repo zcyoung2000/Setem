@@ -430,7 +430,11 @@ final class HUD {
         phase = .hidden
         // Recognition ownership ends immediately. The last rendered content scales
         // into a point without delaying final insertion or accepting late callbacks.
-        guard isVisible, !reduceMotion() else { finishClose(); return }
+        guard isVisible, !reduceMotion() else {
+            panel.orderOut(nil)
+            finishClose()
+            return
+        }
         guard dismissTimer == nil else { return }
         dismissGeneration += 1
         let generation = dismissGeneration
