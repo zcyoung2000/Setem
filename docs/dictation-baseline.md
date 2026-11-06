@@ -93,3 +93,7 @@ swift test --filter DictationSessionTests
 ### 2026-11-05 HUD 再次复核
 
 新增 5 项回归并修复：流式完全空结果按上游立即关闭、Unicode 事件切块不拆代理对。生产开始/停止链路在豆包、微信的流式与非流式组合下验证完整最终文本，并检查取消重录、迟到回调、旧隐藏计时和原生状态切换。基线 73 项、全量 74 项通过；人工目标输入框验收仍按上文步骤进行。详见 [HUD 回归](dictation-hud-regression.md) 与 [范围边界](upstream-behavior-review.md)。
+
+### 2026-11-05 豆包长语音混合回包
+
+补充 [豆包混合回包回归](doubao-transcript-regression.md)：修复累计稿覆盖已润色句，以及首句定稿后屏蔽后续累计文字的问题。保留句子定稿和原稿范围，继续展示未定稿尾部；接收累计最终快照，按 index 隔离修订，仅 SessionFinished 封闭整段。专项 15 项通过，当前 `./Scripts/test.sh` 基线 93 项通过；供应商实际录音验收仍待执行。

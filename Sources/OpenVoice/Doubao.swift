@@ -158,7 +158,7 @@ final class DoubaoEngine: ASREngine {
         while true {
             // 静音期间上游不回包，超时只兜底；结束阶段由 watchdog 限时
             let r = try Response(await ws.receive(timeout: 600))
-            if !r.result.isEmpty { transcript.update(r.result) }
+            if !r.result.isEmpty { transcript.update(r.result, sessionFinished: r.event == "SessionFinished") }
             if r.event.hasSuffix("Failed") { throw ASRError("豆包 \(r.event) \(r.status): \(r.message)") }
             if r.event == "SessionFinished" { return }
         }
@@ -176,9 +176,18 @@ final class DoubaoEngine: ASREngine {
     }
 
     /// 上游按句定稿（index 递增，同一句可能再次定稿按 index 覆盖）；展示 = 已定稿句 + 当前句
-    private final class Transcript {
-        private var sentences: [Int: String] = [:]
-        private var current = ""
+    final class Transcript {
+        private struct Sentence {
+            var text: String
+            var source: String
+            var final: Bool
+            var needsFinalAlignment: Bool
+        }
+        private var sentences: [Int: Sentence] = [:]
+        // After a cumulative final, this holds only the raw tail beyond that snapshot.
+        private var cumulative: String?
+        private var cumulativePrefix: Sentence?
+        private var finished = false
         private var nextIndex = 0
         private let partial: (String) -> Void
         private let lock = NSLock()
@@ -186,44 +195,154 @@ final class DoubaoEngine: ASREngine {
         init(partial: @escaping (String) -> Void) { self.partial = partial }
 
         var result: String {
-            lock.withLock {
-                let done = sentences.keys.sorted().compactMap { sentences[$0] }
-                return joinSentences(done + [current])
-            }
+            lock.withLock { rendered() }
         }
 
-        func update(_ json: String) {
+        private static func isFinal(_ result: [String: Any]) -> Bool {
+            let extra = result["extra"] as? [String: Any]
+            return (extra?["nonstream_result"] as? Bool ?? false)
+                || (result["is_interim"] as? Bool == false && result["is_vad_finished"] as? Bool == true)
+        }
+
+        func update(_ json: String, sessionFinished: Bool = false) {
             guard let obj = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
                   let results = obj["results"] as? [[String: Any]] else { return }
-            // New backend responses put the cumulative text in results[0] and omit index.
-            if !results.contains(where: { ($0["index"] as? Int) != nil }) {
-                guard let text = results.first?["text"] as? String, !text.isEmpty else { return }
-                let shown = lock.withLock {
-                    sentences.removeAll()
-                    current = text
-                    return text
+            let shown: String? = lock.withLock {
+                guard !finished else { return nil }
+                // No-index responses contain the whole transcript; other rows are alternatives.
+                if !results.contains(where: { ($0["index"] as? Int) != nil }) {
+                    guard let first = results.first, let text = first["text"] as? String,
+                          !text.isEmpty else { return nil }
+                    if sessionFinished || Self.isFinal(first) {
+                        let source = (cumulativePrefix?.source ?? "") + (cumulative ?? "")
+                        cumulativePrefix = Sentence(text: text, source: source.isEmpty ? text : source,
+                                                    final: true, needsFinalAlignment: true)
+                        cumulative = nil
+                        sentences.removeAll()
+                        finished = sessionFinished
+                    } else if var prefix = cumulativePrefix {
+                        guard let range = Self.sourceRange(for: prefix, in: text[...]),
+                              range.lowerBound == text.startIndex,
+                              range.upperBound < text.endIndex else { return nil }
+                        // A final flag finalizes the snapshot, not future speech. Accept
+                        // a new tail without letting the raw prefix undo its polishing.
+                        prefix.source = String(text[range])
+                        prefix.needsFinalAlignment = false
+                        cumulativePrefix = prefix
+                        cumulative = String(text[range.upperBound...])
+                    } else {
+                        cumulative = text
+                    }
+                    return rendered()
                 }
-                partial(shown)
-                return
-            }
-            let text: String = lock.withLock {
+                var changed = false
                 for r in results {
                     guard let t = r["text"] as? String, !t.isEmpty else { continue }
-                    let extra = r["extra"] as? [String: Any]
-                    let isFinal = (extra?["nonstream_result"] as? Bool ?? false)
-                        || (r["is_interim"] as? Bool == false && r["is_vad_finished"] as? Bool == true)
-                    if isFinal {
-                        let idx = r["index"] as? Int ?? nextIndex
-                        sentences[idx] = t
-                        nextIndex = max(nextIndex, idx + 1)
-                        current = ""
+                    let idx = r["index"] as? Int ?? nextIndex
+                    let final = Self.isFinal(r)
+                    guard final || sentences[idx]?.final != true else { continue }
+                    let source = final ? (sentences[idx]?.source ?? t) : t
+                    let align = final && (sentences[idx]?.final != true || sentences[idx]?.needsFinalAlignment == true)
+                    let sentence = Sentence(text: t, source: source, final: final, needsFinalAlignment: align)
+                    if cumulativePrefix != nil {
+                        // Ignore old indexed callbacks covered by the cumulative final.
+                        guard let tail = cumulative, Self.sourceRange(for: sentence, in: tail[...]) != nil else { continue }
+                    }
+                    sentences[idx] = sentence
+                    if final { nextIndex = max(nextIndex, idx + 1) }
+                    changed = true
+                }
+                return changed ? rendered() : nil
+            }
+            if let shown { partial(shown) }
+        }
+
+        /// Overlay each sentence on its source span, leaving unfinalized cumulative text intact.
+        /// Remember the source, rather than cutting by the (possibly rewritten) final's length.
+        private func rendered() -> String {
+            let prefix = cumulativePrefix?.text ?? ""
+            let keys = sentences.keys.sorted()
+            guard let cumulative else { return joinSentences([prefix] + keys.compactMap { sentences[$0]?.text }) }
+            var remaining = cumulative[...]
+            var text = ""
+            for idx in keys {
+                guard var sentence = sentences[idx] else { continue }
+                if let range = Self.sourceRange(for: sentence, in: remaining) {
+                    text += remaining[..<range.lowerBound] + sentence.text
+                    sentence.source = String(remaining[range])
+                    sentence.needsFinalAlignment = false
+                    sentences[idx] = sentence
+                    remaining = remaining[range.upperBound...]
+                } else {
+                    // The indexed sentence can be newer than the latest cumulative snapshot.
+                    // Preserve unmatched text instead of guessing a span and deleting speech.
+                    text = joinSentences([text, String(remaining), sentence.text])
+                    remaining = remaining[remaining.endIndex...]
+                }
+            }
+            return prefix + text + remaining
+        }
+
+        private static func sourceRange(for sentence: Sentence, in text: Substring) -> Range<String.Index>? {
+            var range = text.range(of: sentence.source) ?? text.range(of: sentence.text)
+                ?? alignedRange(of: sentence.source, in: text)
+            if sentence.needsFinalAlignment, sentence.source != sentence.text,
+               let finalRange = text.range(of: sentence.text) ?? alignedRange(of: sentence.text, in: text),
+               let sourceRange = range, finalRange.overlaps(sourceRange) {
+                // A cumulative update may have advanced beyond the last indexed interim.
+                range = min(sourceRange.lowerBound, finalRange.lowerBound)..<max(sourceRange.upperBound, finalRange.upperBound)
+            }
+            guard let range else { return nil }
+            var end = range.upperBound
+            // A source partial may omit the punctuation supplied by its polished final.
+            while sentence.final, end < text.endIndex, "。！？!?.,，、；;：:".contains(text[end]) {
+                end = text.index(after: end)
+            }
+            return range.lowerBound..<end
+        }
+
+        /// Locate a lightly rewritten sentence when no indexed raw partial was observed.
+        /// Ignore punctuation for alignment only; emit the provider's exact final and raw tail.
+        /// The source span is cached above, so unchanged cumulative prefixes use exact matching.
+        private static func alignedRange(of source: String, in text: Substring) -> Range<String.Index>? {
+            func significant(_ c: Character) -> Bool {
+                !c.unicodeScalars.allSatisfy {
+                    CharacterSet.punctuationCharacters.contains($0) || CharacterSet.whitespacesAndNewlines.contains($0)
+                }
+            }
+            let needle = source.filter(significant).map { $0 }
+            let positions = text.indices.filter { significant(text[$0]) }
+            let haystack = positions.map { text[$0] }
+            guard !needle.isEmpty, !haystack.isEmpty else { return nil }
+            // Substring edit distance: the preceding raw text is free, but edits inside
+            // a candidate cost one. Carry its start so no unmatched prefix is thrown away.
+            var costs = [Int](repeating: 0, count: haystack.count + 1)
+            var starts = Array(0...haystack.count)
+            for (i, c) in needle.enumerated() {
+                var next = [Int](repeating: i + 1, count: haystack.count + 1)
+                var nextStarts = [Int](repeating: 0, count: haystack.count + 1)
+                for j in 1...haystack.count {
+                    let diagonal = costs[j - 1] + (c == haystack[j - 1] ? 0 : 1)
+                    let deletion = costs[j] + 1
+                    let insertion = next[j - 1] + 1
+                    if diagonal <= deletion && diagonal <= insertion {
+                        next[j] = diagonal
+                        nextStarts[j] = starts[j - 1]
+                    } else if deletion <= insertion {
+                        next[j] = deletion
+                        nextStarts[j] = starts[j]
                     } else {
-                        current = t
+                        next[j] = insertion
+                        nextStarts[j] = nextStarts[j - 1]
                     }
                 }
-                return joinSentences(sentences.keys.sorted().compactMap { sentences[$0] } + [current])
+                costs = next
+                starts = nextStarts
             }
-            partial(text)
+            guard let end = (1...haystack.count).min(by: { costs[$0] < costs[$1] }),
+                  costs[end] <= needle.count / 3,
+                  starts[end] < end else { return nil }
+            return positions[starts[end]]..<text.index(after: positions[end - 1])
         }
     }
 }
