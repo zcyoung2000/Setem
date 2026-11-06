@@ -101,7 +101,7 @@ actor MeetingPipeline {
 
     static func makeEngine(_ channel: Channel) -> ASREngine {
         switch channel {
-        case .doubao, .all: DoubaoEngine(requireFinalResult: true)
+        case .doubao: DoubaoEngine(requireFinalResult: true)
         case .wetype: WeTypeEngine()
         case .qwen: QwenEngine(requireFinalResult: true)
         case .offline: OfflineEngine(dedicatedWorker: true)

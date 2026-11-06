@@ -17,9 +17,7 @@ struct SettingsView: View {
     @AppStorage("silence") private var silence = 1.5
     @AppStorage("silenceStop") private var silenceStop = true
     @AppStorage("hudStyle") private var hudStyle = HUDStyle.compact.rawValue
-    @AppStorage("streaming") private var streaming = true
     @AppStorage("micUID") private var micUID = ""
-    @State private var multi: [Channel]
     @State private var microphones = Microphone.all()
     @ObservedObject private var offline = OfflineAssets.shared
     @State private var axTrusted = AXIsProcessTrusted()
@@ -36,12 +34,10 @@ struct SettingsView: View {
         self.navigation = navigation
         self.defaults = defaults
         self.onResize = onResize
-        _multi = State(initialValue: Channel.selectedMulti(in: defaults))
     }
 
     private var contentHeight: CGFloat {
-        min(navigation.tab.contentHeight(multiChannel: channel == Channel.all.rawValue,
-                                         doubao: channel == Channel.doubao.rawValue),
+        min(navigation.tab.contentHeight(doubao: channel == Channel.doubao.rawValue),
             max(240, (NSScreen.main?.visibleFrame.height ?? 900) - 140))
     }
 
@@ -138,36 +134,8 @@ struct SettingsView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            if channel == Channel.all.rawValue {
-                Section {
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 12) {
-                        ForEach(Channel.engines) { item in
-                            Toggle(item.title, isOn: multiBinding(item))
-                                .toggleStyle(.checkbox)
-                                .disabled(multi.count <= 2 && multi.contains(item))
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    }
-                } header: {
-                    Text("同时识别的渠道（至少选两个）")
-                } footer: {
-                    Text("数字键或 ↑↓ 回车选取；确认后等待所选渠道的完整定稿，再按录音快捷键可继续说。")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
         }
         .formStyle(.grouped)
-    }
-
-    private func multiBinding(_ item: Channel) -> Binding<Bool> {
-        Binding(get: { multi.contains(item) }, set: { enabled in
-            var selection = Set(multi)
-            if enabled { selection.insert(item) } else { selection.remove(item) }
-            guard selection.count >= 2 else { return }
-            multi = Channel.engines.filter { selection.contains($0) }
-            defaults.set(multi.map(\.rawValue), forKey: "multi")
-        })
     }
 
     private var hotkeyPane: some View {
@@ -192,7 +160,7 @@ struct SettingsView: View {
             } header: {
                 Text("快捷键")
             } footer: {
-                Text("长按说话，松开结束；点按可开始或结束聆听。长按并发送会在完整定稿上屏后自动回车，多渠道时采用第一个非空定稿。")
+                Text("长按说话，松开结束；点按可开始或结束聆听。长按并发送会在完整定稿上屏后自动回车。")
                     .font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -233,11 +201,8 @@ struct SettingsView: View {
     private var audioPane: some View {
         Form {
             Section {
-                Toggle("边说边上屏", isOn: $streaming)
-                    .toggleStyle(.switch)
-                    .disabled(channel == Channel.all.rawValue)
-                LabeledContent("提示框样式") {
-                    Picker("提示框样式", selection: $hudStyle) {
+                LabeledContent("浮窗大小") {
+                    Picker("浮窗大小", selection: $hudStyle) {
                         ForEach(HUDStyle.allCases) { Text($0.title).tag($0.rawValue) }
                     }
                     .labelsHidden().pickerStyle(.segmented).frame(width: 140, alignment: .trailing)
@@ -252,9 +217,7 @@ struct SettingsView: View {
             } header: {
                 Text("声音与界面")
             } footer: {
-                Text(channel == Channel.all.rawValue
-                     ? "多渠道模式在选择完整定稿后上屏。"
-                     : "边说边上屏会实时输入识别结果，结束后按定稿修正。")
+                Text("紧凑使用较小的浮窗与字号，标准提供更宽的预览。识别结果定稿后一次性输入。")
                     .font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }

@@ -11,7 +11,7 @@ if args.count >= 3, args[1] == "--offline-worker" {
 signal(SIGPIPE, SIG_IGN) // 离线子进程退出后写管道不应杀死主进程
 
 if let i = args.firstIndex(of: "--test"), i + 2 < args.count {
-    // OpenVoice --test doubao|wetype|offline file.wav [--type]（--type：流式打到当前焦点输入框）
+    // OpenVoice --test doubao|wetype|offline file.wav [--type]（--type：完整定稿后一次性输入）
     let engine: ASREngine = switch args[i + 1] {
     case "wetype": WeTypeEngine()
     case "offline": OfflineEngine()
@@ -19,15 +19,16 @@ if let i = args.firstIndex(of: "--test"), i + 2 < args.count {
     default: DoubaoEngine()
     }
     let url = URL(fileURLWithPath: args[i + 2])
-    let typer = args.contains("--type") ? StreamTyper() : nil
     Task {
         do {
             let start = Date()
             let text = try await engine.run(audio: try fileFrames(url, realtime: true)) { partial in
                 print("…", partial)
-                DispatchQueue.main.async { typer?.update(partial) }
             }
-            await MainActor.run { if !text.isEmpty { typer?.update(text) } }
+            if args.contains("--type"), !text.isEmpty {
+                await MainActor.run { TextInserter.insert(text) }
+                try await Task.sleep(for: .milliseconds(600)) // Let paste and clipboard restoration finish.
+            }
             print("FINAL:", text, String(format: "(%.2fs)", Date().timeIntervalSince(start)))
             exit(0)
         } catch {
@@ -48,7 +49,21 @@ if args.contains("--preview-hud") {
             UserDefaults.standard.set(HUDStyle.compact.rawValue, forKey: "hudStyle")
         }
         let hud = HUD()
-        hud.show("", listening: true)
+        let text = args.firstIndex(of: "--hud-text").flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } ?? ""
+        hud.show(text, listening: true)
+        if args.contains("--thinking") { hud.showThinking() }
+        if args.contains("--demo") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                hud.update("你好，文字只在浮窗里预览。")
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                hud.update("你好，文字只在浮窗里预览。说完后等待润色，再一次性输入到目标输入框。")
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.4) { hud.showThinking() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4.6) { hud.hide() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5.2) { hud.show("继续说话时，平滑回到录音预览。", listening: true) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 6.5) { hud.hide() }
+        }
 
         var step = 0
         Timer.scheduledTimer(withTimeInterval: 0.04, repeats: true) { _ in
@@ -59,6 +74,17 @@ if args.contains("--preview-hud") {
         }
 
         let seconds = args.dropFirst().compactMap { Double($0) }.first ?? 6.0
+        if let index = args.firstIndex(of: "--snapshot"), index + 1 < args.count {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                guard let view = hud.windowForDiagnostics.contentView,
+                      let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { exit(1) }
+                view.cacheDisplay(in: view.bounds, to: bitmap)
+                do {
+                    guard let png = bitmap.representation(using: .png, properties: [:]) else { exit(1) }
+                    try png.write(to: URL(fileURLWithPath: args[index + 1]))
+                } catch { fputs("\(error)\n", stderr); exit(1) }
+            }
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
             exit(0)
         }

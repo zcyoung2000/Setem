@@ -19,7 +19,6 @@ final class DictationSession {
     private var generation = 0
     private var timeoutToken = 0
     private var transcript = DictationTranscript()
-    private var streaming = true
     private var tasks: [Int: Task<Void, Never>] = [:]
     private var watchdog: Task<Void, Never>?
     private var recordingSegment: Int?
@@ -52,7 +51,7 @@ final class DictationSession {
 
     nonisolated static func makeEngine(_ channel: Channel) -> ASREngine {
         switch channel {
-        case .doubao, .all: DoubaoEngine()
+        case .doubao: DoubaoEngine()
         case .wetype: WeTypeEngine()
         case .qwen: QwenEngine()
         case .offline: OfflineEngine(dedicatedWorker: true, keepsWorkerWarm: true)
@@ -61,7 +60,7 @@ final class DictationSession {
 
     /// A second start while finalizing appends a segment; it never cancels a pending final.
     @discardableResult
-    func start(channel: Channel, sendsReturn: Bool = false, streaming: Bool = true) throws -> Bool {
+    func start(channel: Channel, sendsReturn: Bool = false) throws -> Bool {
         guard !isRecording else { return false }
         // Failure to open the next recording must leave the pending session and timer intact.
         let audio = try startCapture()
@@ -69,7 +68,6 @@ final class DictationSession {
         if !isActive {
             generation += 1
             transcript = DictationTranscript()
-            self.streaming = streaming
             self.channel = channel
             sendOnFinish = false
             isActive = true
@@ -130,7 +128,7 @@ final class DictationSession {
 
     private func complete(id: Int, generation gen: Int, text: String, error: String?) {
         guard isActive, generation == gen,
-              transcript.finish(id, text: text, error: error, keepPartial: streaming) else { return }
+              transcript.finish(id, text: text, error: error, keepPartial: false) else { return }
         tasks[id] = nil
         // Finishing an older segment must not stop the recorder owned by a newer one.
         if transcript.finished { stopRecording() }

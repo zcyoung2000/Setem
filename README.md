@@ -2,20 +2,19 @@
 
 <h1 align="center">OpenVoice</h1>
 
-<p align="center">macOS 菜单栏语音输入：在任意输入框里按住或点按快捷键说话，识别结果直接打到光标处。</p>
+<p align="center">macOS 菜单栏语音输入：按住或点按快捷键说话，在浮窗中预览，定稿后一次性输入光标处。</p>
 
 ## 功能
 
 - **四个识别渠道**：豆包输入法、微信输入法、千问输入法云端识别，以及完全本地运行的离线识别（仅 Apple 芯片），可在设置中切换
 - **长按说话**：按住右 ⌥ / 右 ⌘ / 右 ⌃ / Fn 开始，松开结束
 - **点按说话**：自定义快捷键（单个修饰键或任意组合键），点一下开始，停顿 1–5 秒自动结束，再点一下可提前结束；可关闭静音自动结束
-- **长按并发送**：可绑定第二个长按快捷键，定稿上屏后自动回车发送；多渠道模式自动采用第一个无错误的非空定稿
-- **边说边上屏**：识别中的文字实时打到光标处，结束后按定稿修正；关闭后改为结束时一次性粘贴
-- **连续语音输入**：单渠道等待定稿或多渠道候选未关闭时可再次长按或点按继续说，各段按录音顺序合并，保留完整定稿和润色结果
-- **多渠道候选**：原「全部」现为「多渠道（说完挑选）」，可选择至少两个识别渠道；实时显示候选，数字键或 ↑↓ 回车选择，确认未完成的候选会等到定稿，记住上次选择的渠道
+- **长按并发送**：可绑定第二个长按快捷键，定稿上屏后自动回车发送
+- **浮窗预览**：识别中的文字只在浮窗显示，支持换行和长稿尾部预览；结束后等待完整定稿、渠道润色，再一次性输入目标输入框
+- **连续语音输入**：等待定稿时可再次长按或点按继续说，各段按录音顺序合并，保留完整定稿和润色结果
 - **预录保护**：按键按下即收音，长按确认后保留起始语音；取消短按会丢弃该次预录
 - **麦克风选择**：可指定输入设备，设备断开时自动回落到系统默认
-- **声波浮层**：收音时显示声波，松键后保留浮窗，切换为 `thinking` 和加载动画；完整定稿、润色完成后关闭
+- **动态浮窗**：新增文字轻柔淡入，换行时平滑增高，文字保持正常排版；收音时显示文字预览和全宽音频柱，松键后保留预览，音频柱收拢、淡化为 `thinking` 和全宽渐变光带；浮窗从小点张开，完整定稿、润色完成后缩回小点消失，支持系统「减少动态效果」
 - **会议转写**：⌘⇧M 开始，持续收录麦克风和电脑播放的声音；可拖动的动态声波悬浮窗，点击展开转写、停止、复制与导出
 - **会议自动回退**：优先当前渠道，失败、空结果或超时后用原音频切换备用渠道；全部失败的片段保留待补转，可恢复上次会议
 
@@ -46,7 +45,7 @@ xattr -dr com.apple.quarantine /Applications/OpenVoice.app
 | 点按快捷键 | 右 ⌘ |
 | 长按并发送 | 右 ⌃ |
 | 静音自动结束 | 开启，1.5 秒 |
-| 边说边上屏 | 开 |
+| 浮窗大小 | 紧凑（可切换标准，提供更宽预览与稍大字号） |
 | 会议转写快捷键 | ⌘⇧M（可自定义） |
 
 ### 会议转写
@@ -58,7 +57,7 @@ xattr -dr com.apple.quarantine /Applications/OpenVoice.app
 
 会议悬浮窗使用浅色界面，展开/收起采用 0.32 秒缓动与淡入淡出；系统启用「减少动态效果」时直接切换。声波音量单独刷新，文字列表不随音量重排；已排版的内容在窗口动画期间保持固定尺寸。暂停时声波动画停止，恢复时继续。
 
-会议优先使用当前识别渠道，失败时依次尝试其他可用渠道，已安装的本地离线模型也参与回退。「全部」在会议模式中使用自动回退，无需手动选结果。未完成片段每 30 秒自动重试，也可点击「立即重试」。
+会议优先使用当前识别渠道，失败时依次尝试其他可用渠道，已安装的本地离线模型也参与回退。未完成片段每 30 秒自动重试，也可点击「立即重试」。
 
 音频先写入 `~/Library/Application Support/OpenVoice/Meetings/<会议编号>/audio.pcm`，再提交给识别渠道。录音按连续的 5–18 秒片段接续，切片和重试期间持续收音，备用渠道从片段开头重放；临时文字按片段替换，定稿不会重复追加。最多并行处理三段，离线模型仅占用一个识别槽位。原始格式为 16kHz、单声道、16-bit little-endian PCM（约 115 MB/小时）；`session.json` 保存片段进度，`transcript.md` 保存可直接阅读的文字，未定稿段会标注「待补转」。记录由用户自行清理。
 
@@ -67,7 +66,7 @@ xattr -dr com.apple.quarantine /Applications/OpenVoice.app
 **离线识别**：首次选择「离线」渠道时会先询问是否下载引擎库（约 8MB，来自上游 [offline-libs](https://github.com/J3n5en/voicekey/releases/tag/offline-libs) Release）和模型（约 177MB，来自字节 CDN），保存在 `~/Library/Application Support/OpenVoice/offline/`。之后断网也能用；识别时会在后台进程中占用约 1GB 内存，空闲 5 分钟后自动释放，也可随时在设置中删除。
 
 单个修饰键可同时作为长按键和点按键：快速点一下为点按，按住超过 0.3 秒为长按。设为组合键的点按快捷键会被 OpenVoice 拦截，不再传给前台应用。
-长按并发送与长按快捷键一样通过选择器选择；如果与长按或点按快捷键冲突，会自动换到可用按键。识别渠道为「全部」时不会弹出选择浮层，会直接发送第一个返回的非空定稿。
+长按并发送与长按快捷键一样通过选择器选择；如果与长按或点按快捷键冲突，会自动换到可用按键。
 
 ## 从源码构建
 
@@ -81,8 +80,9 @@ xattr -dr com.apple.quarantine /Applications/OpenVoice.app
 - 打包 DMG：`./Scripts/dmg.sh build/OpenVoice.dmg`（窗口布局与背景见 `Scripts/dmg/`）
 - 调试识别链路：`build/OpenVoice.app/Contents/MacOS/OpenVoice --test doubao|wetype file.wav`
 - 渲染会议窗口预览（不收音、不联网）：`build/OpenVoice.app/Contents/MacOS/OpenVoice --preview-meeting /tmp/openvoice-meeting-preview`
+- 渲染听写预览（不收音、不上屏）：`build/OpenVoice.app/Contents/MacOS/OpenVoice --preview-hud --hud-text "明天下午四点开会，请带上完整测试报告。" --thinking --snapshot /tmp/openvoice-preview.png`
 - 窗口性能测试（1000 段模拟记录、持续音量/文字更新和连续展开/收起）：`build/OpenVoice.app/Contents/MacOS/OpenVoice --preview-meeting /tmp/openvoice-meeting-benchmark --benchmark`
-- 语音与音频回归基线（含快捷键预录、候选定稿确认、续录、连接复用，以及会议分片、回退、恢复和混音）：`./Scripts/test.sh`；见 [语音输入回归基线](docs/dictation-baseline.md) 与 [上游流程对齐契约](docs/dictation-parity.md)
+- 语音与音频回归基线（含快捷键预录、定稿确认、续录、连接复用，以及会议分片、回退、恢复和混音）：`./Scripts/test.sh`；见 [语音输入回归基线](docs/dictation-baseline.md) 与 [上游流程对齐契约](docs/dictation-parity.md)
 
 ## 发布
 
@@ -104,7 +104,8 @@ git tag v0.2.0 && git push origin v0.2.0
 | `MeetingRecorder.swift` | ScreenCaptureKit 电脑声音与麦克风收音，按时间戳混音 |
 | `MeetingArchive.swift` / `MeetingPipeline.swift` | 会议音频持久化、连续分片、渠道回退和断点补转 |
 | `MeetingSession.swift` / `MeetingPanel.swift` | 会议生命周期、可拖动悬浮窗与导出 |
-| `System.swift` | 全局快捷键（CGEventTap）、上屏、HUD |
+| `System.swift` | 全局快捷键（CGEventTap）、上屏 |
+| `DictationHUD.swift` / `DictationPreviewTextView.swift` | 浮窗预览、文字淡入、从小点展开与收缩退出 |
 | `Core.swift` | Opus 编码、protobuf 编解码、WebSocket 封装 |
 | `Scripts/icon.swift` | 将 `docs/icon.png` 生成各尺寸 App 图标 |
 

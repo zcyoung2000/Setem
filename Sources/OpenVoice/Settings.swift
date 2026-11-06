@@ -4,7 +4,7 @@ import Combine
 import SwiftUI
 
 enum Channel: String, CaseIterable, Identifiable {
-    case doubao, wetype, qwen, offline, all
+    case doubao, wetype, qwen, offline
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -12,20 +12,18 @@ enum Channel: String, CaseIterable, Identifiable {
         case .wetype: "微信输入法"
         case .qwen: "千问输入法"
         case .offline: "离线（本地模型）"
-        case .all: "多渠道（说完挑选）"
         }
     }
     /// 离线渠道仅 Apple 芯片可用
     static var engines: [Channel] {
         OfflineAssets.supported ? [.doubao, .wetype, .qwen, .offline] : [.doubao, .wetype, .qwen]
     }
-    static var available: [Channel] { engines + [.all] }
-    static var selectedMulti: [Channel] { selectedMulti(in: .standard) }
-    static func selectedMulti(in defaults: UserDefaults) -> [Channel] { normalizedMulti(defaults.stringArray(forKey: "multi")) }
-    static func normalizedMulti(_ requested: [String]?, engines: [Channel] = Channel.engines) -> [Channel] {
-        let requested = Set(requested ?? engines.map(\.rawValue))
-        let selected = engines.filter { requested.contains($0.rawValue) }
-        return selected.count >= 2 ? selected : engines
+    static var available: [Channel] { engines }
+    static func migrateLegacySelection(in defaults: UserDefaults) {
+        if defaults.string(forKey: "channel") == "all" {
+            defaults.set(Channel.doubao.rawValue, forKey: "channel")
+        }
+        for key in ["multi", "lastPick", "pickCounts"] { defaults.removeObject(forKey: key) }
     }
     static var current: Channel { current(in: .standard) }
     static func current(in defaults: UserDefaults) -> Channel {
@@ -228,9 +226,11 @@ struct ShortcutField: View {
     }
 
     private func handle(_ e: NSEvent) {
-        guard let cg = e.cgEvent else { return }
         let code = Int64(e.keyCode)
-        let mods = cg.flags.intersection(Shortcut.mask).rawValue
+        let flags = CGEventFlags(rawValue: UInt64(
+            e.modifierFlags.intersection([.control, .option, .shift, .command]).rawValue
+        ))
+        let mods = flags.intersection(Shortcut.mask).rawValue
         if e.type == .keyDown {
             if code == 53, mods == 0 { return stop() }
             guard mods != 0 || Shortcut.functionKeys.contains(code) else { return NSSound.beep() }
@@ -239,7 +239,7 @@ struct ShortcutField: View {
         }
         guard let flag = Shortcut.modifierFlag[code] else { return }
         guard allowsModifier else { return }
-        if cg.flags.contains(flag) {
+        if flags.contains(flag) {
             // 同时按了多个修饰键则不作为单键录入，等待后续组合键
             pendingModifier = pendingModifier == nil ? code : -1
         } else {
@@ -247,7 +247,7 @@ struct ShortcutField: View {
                 raw = Shortcut(keyCode: code, modifiers: 0, name: Shortcut.modifierName[code]!).raw
                 return stop()
             }
-            if cg.flags.intersection(Shortcut.mask.union(.maskSecondaryFn)).isEmpty { pendingModifier = nil }
+            if flags.intersection(Shortcut.mask.union(.maskSecondaryFn)).isEmpty { pendingModifier = nil }
         }
     }
 }

@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 @testable import OpenVoice
 
@@ -66,13 +67,52 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertNil(window.attachedSheet)
     }
 
-    private func keyEvent(_ characters: String, code: UInt16, in window: NSWindow) throws -> NSEvent {
-        try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+    func testShortcutFieldRecordsModifierTapAndModifiedKey() async throws {
+        _ = NSApplication.shared
+        let suite = "OpenVoice-ShortcutRecording-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite); HotkeyMonitor.paused = false }
+        let window = SettingsWindow(meeting: MeetingSession(), defaults: defaults)
+        window.makeKeyAndOrderFront(nil)
+        window.navigation.tab = .hotkey
+        try await settle(window)
+
+        try press("快捷键", in: window)
+        try await settle(window)
+        try press("点按快捷键", in: window)
+        XCTAssertTrue(HotkeyMonitor.paused)
+
+        NSApp.sendEvent(try flagsChanged(55, pressed: true, in: window))
+        NSApp.sendEvent(try flagsChanged(55, pressed: false, in: window))
+        XCTAssertEqual(defaults.string(forKey: "tapShortcut"), Shortcut(keyCode: 55, modifiers: 0, name: "左 ⌘").raw)
+        XCTAssertFalse(HotkeyMonitor.paused)
+
+        try press("点按快捷键", in: window)
+        NSApp.sendEvent(try flagsChanged(55, pressed: true, in: window))
+        NSApp.sendEvent(try keyEvent("m", code: 46, modifiers: [.command], in: window))
+        XCTAssertEqual(
+            defaults.string(forKey: "tapShortcut"),
+            Shortcut(keyCode: 46, modifiers: CGEventFlags([.maskCommand]).rawValue, name: "M").raw
+        )
+        XCTAssertFalse(HotkeyMonitor.paused)
+        window.close()
+    }
+
+    private func keyEvent(_ characters: String, code: UInt16,
+                          modifiers: NSEvent.ModifierFlags = [], in window: NSWindow) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers,
                                       timestamp: ProcessInfo.processInfo.systemUptime,
                                       windowNumber: window.windowNumber, context: nil,
                                       characters: characters, charactersIgnoringModifiers: characters,
                                       isARepeat: false, keyCode: code))
     }
+
+    private func flagsChanged(_ code: UInt16, pressed: Bool, in window: NSWindow) throws -> NSEvent {
+        let cgEvent = try XCTUnwrap(CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: pressed))
+        cgEvent.flags = pressed ? (code == 55 ? .maskCommand : .maskAlternate) : []
+        return try XCTUnwrap(NSEvent(cgEvent: cgEvent))
+    }
+
 
     private func attribute(_ name: String, of element: NSObject) -> Any? {
         let selector = NSSelectorFromString(name)
@@ -147,7 +187,7 @@ final class SettingsWindowTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set("wetype", forKey: "channel")
-        defaults.set(false, forKey: "streaming")
+        defaults.set(HUDStyle.compact.rawValue, forKey: "hudStyle")
         let window = SettingsWindow(meeting: MeetingSession(), defaults: defaults)
         window.orderFrontRegardless()
         defer { window.close() }
@@ -158,56 +198,76 @@ final class SettingsWindowTests: XCTestCase {
         try press("声音与界面", in: window)
         try await settle(window)
 
-        let streaming = try XCTUnwrap(elements(in: window).first { label($0)?.contains("边说边上屏") == true },
-                                     "\(elements(in: window).map { "\(role($0) ?? "-"):\(label($0) ?? "-")" })")
-        XCTAssertEqual((attribute("accessibilityValue", of: streaming) as? NSNumber)?.boolValue, false)
-        _ = boolean("accessibilityPerformPress", of: streaming)
+        XCTAssertFalse(elements(in: window).contains { label($0)?.contains("边说边上屏") == true })
+        let style = try XCTUnwrap(nativeViews(in: XCTUnwrap(window.contentView)).compactMap { $0 as? NSSegmentedControl }
+            .first { $0.segmentCount == HUDStyle.allCases.count })
+        style.selectedSegment = 1
+        _ = style.sendAction(style.action, to: style.target)
         try await settle(window)
-        XCTAssertTrue(defaults.bool(forKey: "streaming"))
+        XCTAssertEqual(defaults.string(forKey: "hudStyle"), HUDStyle.standard.rawValue)
         XCTAssertLessThan(window.frame.height, initialHeight)
         XCTAssertEqual(window.frame.maxY, top, accuracy: 1)
 
         try press("识别渠道", in: window)
         try await settle(window)
         XCTAssertEqual(defaults.string(forKey: "channel"), "wetype")
-        XCTAssertTrue(defaults.bool(forKey: "streaming"))
+        XCTAssertEqual(defaults.string(forKey: "hudStyle"), HUDStyle.standard.rawValue)
         XCTAssertEqual(window.frame.maxY, top, accuracy: 1)
         XCTAssertEqual(window.frame.height, initialHeight, accuracy: 1)
     }
 
-    func testChannelSelectionPersistsAndMultiChannelKeepsAtLeastTwo() async throws {
+    func testLegacyMultiSelectionMigratesAndOnlySingleChannelsRemain() async throws {
         _ = NSApplication.shared
-        let suite = "OpenVoice-MultiSettings-" + UUID().uuidString
+        let suite = "OpenVoice-SingleChannelSettings-" + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        defaults.set(["doubao", "wetype", "qwen"], forKey: "multi")
+        defaults.set("all", forKey: "channel")
+        defaults.set(["doubao", "wetype"], forKey: "multi")
         let window = SettingsWindow(meeting: MeetingSession(), defaults: defaults)
-        window.orderFrontRegardless()
         defer { window.close() }
+        window.makeKeyAndOrderFront(nil)
         try await settle(window)
+        XCTAssertEqual(defaults.string(forKey: "channel"), "doubao")
+        XCTAssertNil(defaults.object(forKey: "multi"))
+        XCTAssertFalse(elements(in: window).contains { label($0)?.contains("多渠道") == true })
+        XCTAssertEqual(Channel.available, Channel.engines)
         try press("微信输入法", in: window)
         try await settle(window)
         XCTAssertEqual(defaults.string(forKey: "channel"), "wetype")
+    }
 
-        try press("多渠道（说完挑选）", in: window)
+    func testNativeSizeChoiceUpdatesTheVisibleHUDAndPersistsOnReopen() async throws {
+        _ = NSApplication.shared
+        let suite = "OpenVoice-LiveHUDSize-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defaults.set(HUDStyle.compact.rawValue, forKey: "hudStyle")
+        let window = SettingsWindow(meeting: MeetingSession(), defaults: defaults)
+        let hud = HUD(defaults: defaults, reduceMotion: { true })
+        defer { hud.hide(); window.close(); defaults.removePersistentDomain(forName: suite) }
+        window.navigation.tab = .audio
+        window.makeKeyAndOrderFront(nil)
         try await settle(window)
-        let qwen = try XCTUnwrap(elements(in: window).first {
-            label($0) == "千问输入法" && role($0) == NSAccessibility.Role.checkBox.rawValue
-        })
-        XCTAssertTrue(boolean("accessibilityPerformPress", of: qwen))
+        hud.show("浮窗大小切换应立即应用到实际窗口。", listening: true)
+        let compact = hud.windowForDiagnostics.frame.size
+        try press("标准", in: window)
         try await settle(window)
-        XCTAssertEqual(defaults.stringArray(forKey: "multi"), ["doubao", "wetype"])
-        let doubao = try XCTUnwrap(elements(in: window).first {
-            label($0) == "豆包输入法" && role($0) == NSAccessibility.Role.checkBox.rawValue
-        })
-        XCTAssertFalse(boolean("isAccessibilityEnabled", of: doubao))
-        XCTAssertEqual(defaults.string(forKey: "channel"), "all")
-
-        try press("声音与界面", in: window)
+        XCTAssertEqual(defaults.string(forKey: "hudStyle"), HUDStyle.standard.rawValue)
+        try await parityEventually { hud.windowForDiagnostics.frame.width > compact.width + 40 }
+        let standard = hud.windowForDiagnostics.frame.size
+        try press("紧凑", in: window)
         try await settle(window)
-        let streaming = try XCTUnwrap(elements(in: window).first { label($0)?.contains("边说边上屏") == true },
-                                     "\(elements(in: window).map { "\(role($0) ?? "-"):\(label($0) ?? "-")" })")
-        XCTAssertFalse(boolean("isAccessibilityEnabled", of: streaming))
+        try await parityEventually { abs(hud.windowForDiagnostics.frame.width - compact.width) < 1 }
+        XCTAssertGreaterThan(standard.width, compact.width)
+        window.close()
+        let reopened = SettingsWindow(meeting: MeetingSession(), defaults: defaults)
+        defer { reopened.close() }
+        reopened.navigation.tab = .audio
+        reopened.makeKeyAndOrderFront(nil)
+        try await settle(reopened)
+        XCTAssertEqual(defaults.string(forKey: "hudStyle"), HUDStyle.compact.rawValue)
+        try press("标准", in: reopened)
+        try await settle(reopened)
+        try await parityEventually { abs(hud.windowForDiagnostics.frame.width - standard.width) < 1 }
     }
 
     func testLeavingShortcutPageAndClosingWindowReleaseKeyboardMonitor() async throws {

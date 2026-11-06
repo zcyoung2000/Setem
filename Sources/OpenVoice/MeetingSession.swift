@@ -57,7 +57,7 @@ final class MeetingSession: ObservableObject {
          engineFactory: @escaping MeetingPipeline.EngineFactory = MeetingPipeline.makeEngine,
          channels: @escaping () -> [Channel] = {
              let available = Channel.engines.filter { $0 != .offline || OfflineAssets.installed }
-             let primary = Channel.current == .all ? Channel.doubao : Channel.current
+             let primary = Channel.current
              return ([primary] + available.filter { $0 != primary }).filter { available.contains($0) }
          }) {
         self.captureFactory = captureFactory

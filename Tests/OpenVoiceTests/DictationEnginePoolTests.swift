@@ -68,29 +68,28 @@ final class DictationEnginePoolTests: XCTestCase {
         XCTAssertEqual(results.count, 2)
     }
 
-    func testSingleSessionPinsStreamingAndUsesVerbatimJoin() async throws {
-        for streaming in [false, true] {
-            let hardware = ParityCapture()
-            var engines: [ParityEngine] = []
-            var result: DictationSession.Result?
-            let model = DictationSession(startCapture: hardware.start, stopCapture: hardware.stop, makeEngine: { _ in
-                let e = ParityEngine(); engines.append(e); return e
-            })
-            model.onFinish = { result = $0 }
-            defer { model.cancel(); hardware.close(); engines.forEach { $0.close() } }
-            try model.start(channel: .doubao, streaming: streaming)
-            model.end()
-            try model.start(channel: .doubao, streaming: !streaming)
-            try await parityEventually { engines.allSatisfy { $0.rounds.count == 1 } }
-            engines[1].rounds[0].partial("Voice尾字")
-            try await parityEventually { model.text == "Voice尾字" }
-            engines[0].rounds[0].resolve(.success("Open"))
-            try await parityEventually { model.text == "OpenVoice尾字" }
-            model.end()
-            engines[1].rounds[0].resolve(.success(""))
-            try await parityEventually { result != nil }
-            XCTAssertEqual(result?.text, streaming ? "OpenVoice尾字" : "Open")
-        }
+    func testSingleSessionPinsChannelAndUsesVerbatimJoin() async throws {
+        let hardware = ParityCapture()
+        var engines: [ParityEngine] = []
+        var result: DictationSession.Result?
+        let model = DictationSession(startCapture: hardware.start, stopCapture: hardware.stop, makeEngine: { _ in
+            let e = ParityEngine(); engines.append(e); return e
+        })
+        model.onFinish = { result = $0 }
+        defer { model.cancel(); hardware.close(); engines.forEach { $0.close() } }
+        try model.start(channel: .doubao)
+        model.end()
+        try model.start(channel: .wetype)
+        XCTAssertEqual(model.channel, .doubao)
+        try await parityEventually { engines.allSatisfy { $0.rounds.count == 1 } }
+        engines[1].rounds[0].partial("Voice尾字")
+        try await parityEventually { model.text == "Voice尾字" }
+        engines[0].rounds[0].resolve(.success("Open"))
+        try await parityEventually { model.text == "OpenVoice尾字" }
+        model.end()
+        engines[1].rounds[0].resolve(.success(""))
+        try await parityEventually { result != nil }
+        XCTAssertEqual(result?.text, "Open")
     }
 
     func testEarlyCurrentFinalWaitsForOlderSegmentBeforeStoppingCapture() async throws {

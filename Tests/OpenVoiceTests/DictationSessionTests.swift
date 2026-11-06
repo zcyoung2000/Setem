@@ -303,8 +303,8 @@ final class DictationSessionTests: XCTestCase {
         XCTAssertEqual(rig.results[0], .init(text: "第一段已识别。第二段完整稿。", error: "模拟网络断开", sendsReturn: false))
     }
 
-    // R3/R4: an empty final is not permission to erase already recognized tail characters.
-    func testEmptyFinalPreservesRecognizedTail() async throws {
+    // Preview-only input follows upstream non-streaming semantics for a successful empty final.
+    func testEmptyFinalWithdrawsProvisionalPreview() async throws {
         let rig = DictationRig()
         defer { rig.close() }
         try rig.model.start(channel: .doubao)
@@ -314,12 +314,12 @@ final class DictationSessionTests: XCTestCase {
         rig.model.end()
         rig.engines[0].resolve(.success(""))
         try await eventually { rig.results.count == 1 }
-        XCTAssertEqual(rig.results[0].text, "结尾几个字完整保留")
-        XCTAssertEqual(rig.updates.last, "结尾几个字完整保留")
+        XCTAssertEqual(rig.results[0].text, "")
+        XCTAssertEqual(rig.updates.last, "")
     }
 
     // R3: callback ordering must also hold when a vendor emits then returns/throws synchronously.
-    func testImmediateEmptyFinalOrFailureRetainsLastPartial() async throws {
+    func testImmediateEmptyFinalOrFailurePreservesCallbackOrdering() async throws {
         let replies: [(Swift.Result<String, Error>, String?)] = [(.success(""), nil), (.failure(ASRError("同步错误")), "同步错误")]
         for (reply, error) in replies {
             let rig = DictationRig()
@@ -327,8 +327,10 @@ final class DictationSessionTests: XCTestCase {
             rig.configure = { $0.immediateReply = reply }
             try rig.model.start(channel: .wetype)
             try await eventually { rig.results.count == 1 }
-            XCTAssertEqual(rig.results[0].text, "同步回调的完整尾字")
-            XCTAssertEqual(rig.updates.last, "同步回调的完整尾字")
+            let expected = error == nil ? "" : "同步回调的完整尾字"
+            XCTAssertEqual(rig.results[0].text, expected)
+            XCTAssertEqual(rig.updates.last, expected)
+            XCTAssertTrue(rig.updates.contains("同步回调的完整尾字"))
             XCTAssertEqual(rig.capture.stops, 1)
             XCTAssertEqual(rig.results[0].error, error)
         }
