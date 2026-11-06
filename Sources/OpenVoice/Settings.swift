@@ -11,10 +11,10 @@ enum Channel: String, CaseIterable, Identifiable {
         case .doubao: "豆包输入法"
         case .wetype: "微信输入法"
         case .qwen: "千问输入法"
-        case .offline: "离线（本地模型）"
+        case .offline: "本地模型"
         }
     }
-    /// 离线渠道仅 Apple 芯片可用
+    /// 本地模型仅 Apple 芯片可用
     static var engines: [Channel] {
         OfflineAssets.supported ? [.doubao, .wetype, .qwen, .offline] : [.doubao, .wetype, .qwen]
     }

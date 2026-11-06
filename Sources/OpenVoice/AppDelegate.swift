@@ -227,13 +227,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
-        let header = NSMenuItem(title: "长按 \(Hotkey.current.title) 说话", action: nil, keyEquivalent: "")
-        header.isEnabled = false
-        menu.addItem(header)
-        let sendHeader = NSMenuItem(title: "长按 \(Hotkey.sendHold.title) 说话并发送", action: nil, keyEquivalent: "")
-        sendHeader.isEnabled = false
-        menu.addItem(sendHeader)
-        menu.addItem(.separator())
         let meetingItem = NSMenuItem(title: meeting.hasOpenMeeting ? "显示会议转写" : "开始会议转写", action: #selector(showMeeting), keyEquivalent: "")
         meetingItem.target = self
         menu.addItem(meetingItem)
@@ -244,7 +237,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             pause.isEnabled = meeting.phase == .recording || meeting.phase == .paused
             menu.addItem(pause)
         } else if MeetingSession.latestDirectory != nil {
-            let restore = NSMenuItem(title: "恢复上次会议 / 补转", action: #selector(restoreMeeting), keyEquivalent: "")
+            let restore = NSMenuItem(title: "恢复上次会议", action: #selector(restoreMeeting), keyEquivalent: "")
             restore.target = self
             menu.addItem(restore)
         }
@@ -278,8 +271,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         MainActor.assumeIsolated {
             let alert = NSAlert()
-            alert.messageText = "下载离线模型？"
-            alert.informativeText = "将下载约 185MB 的离线引擎库和模型，之后可随时在设置中删除。"
+            alert.messageText = "下载本地模型？"
+            alert.informativeText = "将下载约 185MB 的本地引擎库和模型，之后可随时在设置中删除。"
             alert.addButton(withTitle: "下载")
             alert.addButton(withTitle: "取消")
 

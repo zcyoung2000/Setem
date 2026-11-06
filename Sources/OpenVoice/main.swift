@@ -4,11 +4,11 @@ import SwiftUI
 
 let args = CommandLine.arguments
 if args.count >= 3, args[1] == "--offline-worker" {
-    // 离线识别子进程：stdin/stdout JSON-lines，由 OfflineWorker 拉起
+    // 本地模型识别子进程：stdin/stdout JSON-lines，由 OfflineWorker 拉起
     var argv: [UnsafeMutablePointer<CChar>?] = ["OpenVoice", "--pipe", args[2]].map { (s: String) in strdup(s) } + [nil]
     exit(hanbao_main(3, &argv))
 }
-signal(SIGPIPE, SIG_IGN) // 离线子进程退出后写管道不应杀死主进程
+signal(SIGPIPE, SIG_IGN) // 本地模型子进程退出后写管道不应杀死主进程
 
 if let i = args.firstIndex(of: "--benchmark-performance"), i + 1 < args.count {
     MainActor.assumeIsolated {

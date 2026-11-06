@@ -81,8 +81,8 @@ struct SettingsView: View {
         .sheet(isPresented: $showCompare) {
             ChannelCompareSheet(channel: $channel, compare: compare)
         }
-        .confirmationDialog("下载离线模型？", isPresented: $confirmOfflineDownload, titleVisibility: .visible) {
-            Button("下载（约 190 MB）") {
+        .confirmationDialog("下载本地模型？", isPresented: $confirmOfflineDownload, titleVisibility: .visible) {
+            Button("下载") {
                 channelBeforeOffline = nil
                 offline.download()
             }
@@ -93,7 +93,7 @@ struct SettingsView: View {
                 channelBeforeOffline = nil
             }
         } message: {
-            Text("将下载离线引擎库和模型到“应用程序支持/OpenVoice/offline”，下载完成后可随时删除。")
+            Text("将下载约 190 MB 的本地引擎库和模型到“应用程序支持/OpenVoice/offline”，下载完成后可随时删除。")
         }
     }
 
@@ -287,7 +287,7 @@ private struct OfflineStatus: View {
     @State private var confirmDelete = false
 
     var body: some View {
-        LabeledContent("离线模型（约 190 MB）") {
+        LabeledContent("本地模型") {
             switch offline.state {
             case .ready:
                 HStack {
@@ -309,11 +309,11 @@ private struct OfflineStatus: View {
                 }
             }
         }
-        .confirmationDialog("删除离线模型？", isPresented: $confirmDelete, titleVisibility: .visible) {
-            Button("删除（约 190 MB）", role: .destructive, action: onDelete)
+        .confirmationDialog("删除本地模型？", isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("删除", role: .destructive, action: onDelete)
             Button("取消", role: .cancel) {}
         } message: {
-            Text("将删除本地离线引擎库和模型；之后使用离线识别时需要重新下载。")
+            Text("将删除约 190 MB 的本地引擎库和模型；之后使用本地模型时需要重新下载。")
         }
     }
 }

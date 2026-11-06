@@ -2,7 +2,7 @@ import CryptoKit
 import Darwin
 import Foundation
 
-/// 离线识别资源（仅 Apple 芯片）：引擎库来自本仓库 Release，模型来自字节 CDN，需用户确认后下载
+/// 本地模型资源（仅 Apple 芯片）：引擎库来自本仓库 Release，模型来自字节 CDN，需用户确认后下载
 @MainActor
 final class OfflineAssets: ObservableObject {
     static let shared = OfflineAssets()
@@ -138,7 +138,7 @@ private final class Fetcher: NSObject, URLSessionDownloadDelegate, @unchecked Se
     }
 }
 
-/// 离线识别子进程（OpenVoice --offline-worker <model>，stdin/stdout JSON-lines），崩溃不影响主进程，空闲 5 分钟退出释放内存
+/// 本地模型识别子进程（OpenVoice --offline-worker <model>，stdin/stdout JSON-lines），崩溃不影响主进程，空闲 5 分钟退出释放内存
 final class OfflineWorker: @unchecked Sendable {
     static let shared = OfflineWorker()
     private let queue = DispatchQueue(label: "openvoice.offline")
@@ -187,17 +187,17 @@ final class OfflineWorker: @unchecked Sendable {
         var req: [String: Any] = ["op": op]
         if let b64 { req["b64"] = b64 }
         let line = try JSONSerialization.data(withJSONObject: req, options: .withoutEscapingSlashes) + Data([10])
-        do { try input?.write(contentsOf: line) } catch { stop(); throw ASRError("离线引擎已退出") }
+        do { try input?.write(contentsOf: line) } catch { stop(); throw ASRError("本地引擎已退出") }
         guard let reply = readLine(),
               let obj = try? JSONSerialization.jsonObject(with: reply) as? [String: Any]
-        else { stop(); throw ASRError("离线引擎异常退出") }
-        guard obj["ok"] as? Bool == true else { throw ASRError("离线引擎错误：\(obj["error"] ?? "未知")") }
+        else { stop(); throw ASRError("本地引擎异常退出") }
+        guard obj["ok"] as? Bool == true else { throw ASRError("本地引擎错误：\(obj["error"] ?? "未知")") }
         return obj["text"] as? String ?? ""
     }
 
     private func launch() throws {
         guard !processLock.withLock({ interrupted }) else { throw CancellationError() }
-        guard OfflineAssets.installed, let exe = Bundle.main.executableURL else { throw ASRError("离线模型未下载") }
+        guard OfflineAssets.installed, let exe = Bundle.main.executableURL else { throw ASRError("本地模型未下载") }
         let p = Process()
         p.executableURL = exe
         p.arguments = ["--offline-worker", OfflineAssets.model.path]
@@ -269,7 +269,7 @@ final class OfflineEngine: ASREngine {
 
     func run(audio: AsyncStream<[Int16]>, partial: @escaping (String) -> Void) async throws -> String {
         guard OfflineAssets.installed else {
-            throw ASRError("离线模型未下载，请在设置中确认下载")
+            throw ASRError("本地模型未下载，请在设置中确认下载")
         }
         // Overlapping meeting segments must not reset another segment's local recognizer.
         let w = warmWorker ?? (dedicatedWorker ? OfflineWorker() : OfflineWorker.shared)
