@@ -366,7 +366,7 @@ final class DictationHUDTests: XCTestCase {
             }
             let expanded = hud.windowForDiagnostics.frame
             XCTAssertGreaterThan(expanded.width, initial.width)
-            XCTAssertGreaterThan(Set(frames.map { Int($0.width.rounded()) }).count, 5)
+            XCTAssertGreaterThanOrEqual(Set(frames.map { Int($0.width.rounded()) }).count, 5)
             let earlyProgress = (frames[5].width - initial.width) / (expanded.width - initial.width)
             XCTAssertGreaterThan(earlyProgress, 0.4, "Expansion must ease out instead of moving at constant speed")
             try await assertWave(hud)

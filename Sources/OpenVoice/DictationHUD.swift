@@ -8,7 +8,8 @@ private final class HUDMeter: ObservableObject {
     @Published var level: CGFloat = 0
     func push(_ raw: Float) {
         let value = CGFloat(max(0, min(1, raw)))
-        level = value > level ? level * 0.3 + value * 0.7 : level * 0.85 + value * 0.15
+        let next = value > level ? level * 0.3 + value * 0.7 : level * 0.85 + value * 0.15
+        if next != level { level = next }
     }
 }
 
@@ -25,6 +26,8 @@ private struct DictationAudioBars: View {
                 let count = max(12, Int(size.width / 6))
                 let step = size.width / CGFloat(count)
                 let gradient = Gradient(colors: [.cyan, .blue, .indigo, .purple])
+                let shading = GraphicsContext.Shading.linearGradient(
+                    gradient, startPoint: .zero, endPoint: CGPoint(x: size.width, y: 0))
                 for index in 0..<count {
                     let position = CGFloat(index) / CGFloat(count - 1)
                     let envelope: CGFloat = 0.38 + 0.62 * pow(sin(CGFloat.pi * position), 0.7)
@@ -32,8 +35,7 @@ private struct DictationAudioBars: View {
                     let height = 3 + (size.height - 4) * envelope * (0.16 + meter.level * 0.84) * (0.35 + pulse * 0.65)
                     let rect = CGRect(x: CGFloat(index) * step + (step - 2.5) / 2,
                                       y: (size.height - height) / 2, width: 2.5, height: height)
-                    canvas.fill(Path(roundedRect: rect, cornerRadius: 1.25), with: .linearGradient(
-                        gradient, startPoint: .zero, endPoint: CGPoint(x: size.width, y: 0)))
+                    canvas.fill(Path(roundedRect: rect, cornerRadius: 1.25), with: shading)
                 }
             }
         }
@@ -181,7 +183,7 @@ private final class DictationHUDSurface: NSView {
         let compact = style != .standard
         let font = NSFont.systemFont(ofSize: compact ? 14 : 15)
         let width = min(compact ? 360 : 440, screenWidth - 72)
-        let changed = self.text != text || transcript.font != font
+        let changed = self.text != text || transcript.configuredFont != font
         let previous = self.phase
         if phase == .listening, previous == .hidden || previous == .message {
             meter.level = 0
@@ -192,9 +194,14 @@ private final class DictationHUDSurface: NSView {
         footerHeight = compact ? 32 : 40
         transcript.update(text, font: font, animated: !reducedMotion && (phase == .listening || phase == .thinking))
         let showsPreview = !text.isEmpty && (phase == .listening || phase == .thinking)
-        let measured = (text as NSString).boundingRect(with: NSSize(width: width, height: .greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: font])
-        let nextPreviewSize = showsPreview ? NSSize(width: width, height: min(160, max(22, ceil(measured.height) + 4))) : .zero
+        let nextPreviewSize: NSSize
+        if !showsPreview { nextPreviewSize = .zero }
+        else if !changed, previewSize.width == width { nextPreviewSize = previewSize }
+        else {
+            let measured = (text as NSString).boundingRect(with: NSSize(width: width, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: font])
+            nextPreviewSize = NSSize(width: width, height: min(160, max(22, ceil(measured.height) + 4)))
+        }
         textNeedsLayout = textNeedsLayout || changed || previewSize != nextPreviewSize
         previewSize = nextPreviewSize
         if phase == .message {
@@ -433,7 +440,7 @@ final class HUD {
         container.renderedSize = container.renderedSize ?? start.size
         let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] timer in
             guard let self, self.dismissGeneration == generation else { timer.invalidate(); return }
-            let progress = min(1, (CACurrentMediaTime() - began) / 0.24)
+            let progress = min(1, (CACurrentMediaTime() - began) / 0.34)
             let eased = CGFloat(progress * progress * (3 - 2 * progress))
             self.panel.setFrame(self.interpolate(start, destination, width: eased, height: eased), display: true)
             self.layoutContainer()
