@@ -183,7 +183,7 @@ private final class DictationHUDSurface: NSView {
         let compact = style != .standard
         let font = NSFont.systemFont(ofSize: compact ? 14 : 15)
         let width = min(compact ? 360 : 440, screenWidth - 72)
-        let changed = self.text != text || transcript.configuredFont != font
+        let changed = self.text != text
         let previous = self.phase
         if phase == .listening, previous == .hidden || previous == .message {
             meter.level = 0

@@ -10,26 +10,41 @@ final class DictationPreviewTextView: NSTextView {
     }
     private var reveals: [Reveal] = []
     private var revealTimer: Timer?
-
     func update(_ text: String, font: NSFont, animated: Bool) {
         self.font = font
-        textColor = .labelColor
-        guard string != text else {
+        if textColor != .labelColor { textColor = .labelColor }
+        let previous = string
+        guard !previous.utf16.elementsEqual(text.utf16) else {
             if !animated { finishReveals() }
             return
         }
-        let old = Array(string), next = Array(text)
-        var prefix = 0
+        guard animated, !text.isEmpty else {
+            finishReveals()
+            if let storage = textStorage {
+                storage.setAttributedString(NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: NSColor.labelColor]))
+            } else { string = text }
+            setAccessibilityValue(text)
+            return
+        }
+        var oldStart = previous.startIndex, newStart = text.startIndex
         // Temporary attributes use UTF-16 offsets; canonically equivalent glyphs
         // with different encodings must be treated as a replacement as well.
-        while prefix < min(old.count, next.count),
-              String(old[prefix]).utf16.elementsEqual(String(next[prefix]).utf16) { prefix += 1 }
-        var suffix = 0
-        while suffix < min(old.count, next.count) - prefix,
-              String(old[old.count - suffix - 1]).utf16.elementsEqual(String(next[next.count - suffix - 1]).utf16) { suffix += 1 }
-        let prefixLength = String(next.prefix(prefix)).utf16.count
-        let suffixLength = String(next.suffix(suffix)).utf16.count
-        let oldLength = string.utf16.count, newLength = text.utf16.count
+        while oldStart < previous.endIndex, newStart < text.endIndex {
+            let oldNext = previous.index(after: oldStart), newNext = text.index(after: newStart)
+            guard previous[oldStart..<oldNext].utf16.elementsEqual(text[newStart..<newNext].utf16) else { break }
+            oldStart = oldNext
+            newStart = newNext
+        }
+        var oldEnd = previous.endIndex, newEnd = text.endIndex
+        while oldEnd > oldStart, newEnd > newStart {
+            let oldNext = previous.index(before: oldEnd), newNext = text.index(before: newEnd)
+            guard previous[oldNext..<oldEnd].utf16.elementsEqual(text[newNext..<newEnd].utf16) else { break }
+            oldEnd = oldNext
+            newEnd = newNext
+        }
+        let prefixLength = text[..<newStart].utf16.count
+        let suffixLength = text[newEnd...].utf16.count
+        let oldLength = previous.utf16.count, newLength = text.utf16.count
         let prefixRange = NSRange(location: 0, length: prefixLength)
         let suffixRange = NSRange(location: oldLength - suffixLength, length: suffixLength)
         var retained: [Reveal] = []
@@ -44,9 +59,11 @@ final class DictationPreviewTextView: NSTextView {
             }
         }
         finishReveals()
-        string = text
+        if let storage = textStorage {
+            storage.replaceCharacters(in: NSRange(location: prefixLength, length: oldLength - prefixLength - suffixLength),
+                with: NSAttributedString(string: String(text[newStart..<newEnd]), attributes: [.font: font, .foregroundColor: NSColor.labelColor]))
+        } else { string = text }
         setAccessibilityValue(text)
-        guard animated, newLength > 0 else { return }
         reveals = retained
         let changed = NSRange(location: prefixLength, length: newLength - prefixLength - suffixLength)
         if changed.length > 0 { reveals.append(Reveal(range: changed, began: CACurrentMediaTime())) }
@@ -60,21 +77,28 @@ final class DictationPreviewTextView: NSTextView {
     func finishReveals() {
         revealTimer?.invalidate()
         revealTimer = nil
+        for reveal in reveals {
+            layoutManager?.removeTemporaryAttribute(.foregroundColor, forCharacterRange: reveal.range)
+            layoutManager?.invalidateDisplay(forCharacterRange: reveal.range)
+        }
         reveals.removeAll()
-        layoutManager?.removeTemporaryAttribute(.foregroundColor, forCharacterRange: NSRange(location: 0, length: string.utf16.count))
     }
 
     private func paintReveals() {
         let now = CACurrentMediaTime()
-        layoutManager?.removeTemporaryAttribute(.foregroundColor, forCharacterRange: NSRange(location: 0, length: string.utf16.count))
-        reveals.removeAll { now - $0.began >= 0.26 }
         for reveal in reveals {
+            if now - reveal.began >= 0.26 {
+                layoutManager?.removeTemporaryAttribute(.foregroundColor, forCharacterRange: reveal.range)
+                layoutManager?.invalidateDisplay(forCharacterRange: reveal.range)
+                continue
+            }
             let progress = min(1, max(0, (now - reveal.began) / 0.26))
             let eased = progress * progress * (3 - 2 * progress)
             layoutManager?.addTemporaryAttribute(.foregroundColor,
                 value: NSColor.labelColor.withAlphaComponent(0.16 + 0.84 * eased), forCharacterRange: reveal.range)
+            layoutManager?.invalidateDisplay(forCharacterRange: reveal.range)
         }
-        needsDisplay = true
+        reveals.removeAll { now - $0.began >= 0.26 }
         if reveals.isEmpty { revealTimer?.invalidate(); revealTimer = nil }
     }
 
