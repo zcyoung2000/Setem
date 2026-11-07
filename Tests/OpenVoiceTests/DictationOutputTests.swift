@@ -37,7 +37,7 @@ final class DictationOutputTests: XCTestCase {
                     var inserted: [(String, Bool)] = []
                     let app = AppDelegate(capture: DictationCapture(start: hardware.start, stop: hardware.stop),
                         enginePool: DictationEnginePool { _ in engine }, hud: hud, defaults: defaults,
-                        insertText: { inserted.append(($0, $1)) })
+                        failoverPolicy: nil, insertText: { inserted.append(($0, $1)) })
                     defer {
                         app.dictation.cancel(); hardware.close(); engine.close(); hud.hide()
                         defaults.removePersistentDomain(forName: suite)
@@ -70,7 +70,7 @@ final class DictationOutputTests: XCTestCase {
         var insertions = 0
         let app = AppDelegate(capture: DictationCapture(start: hardware.start, stop: hardware.stop),
             enginePool: DictationEnginePool { _ in engine }, hud: hud, defaults: defaults,
-            insertText: { _, _ in insertions += 1 })
+            failoverPolicy: nil, insertText: { _, _ in insertions += 1 })
         defer {
             app.dictation.cancel(); hardware.close(); engine.close(); hud.hide()
             defaults.removePersistentDomain(forName: suite)
@@ -92,7 +92,7 @@ final class DictationOutputTests: XCTestCase {
             var inserted: [(String, Bool)] = []
             let app = AppDelegate(capture: DictationCapture(start: hardware.start, stop: hardware.stop),
                 enginePool: DictationEnginePool { _ in engine }, hud: hud, defaults: defaults,
-                insertText: { inserted.append(($0, $1)) })
+                failoverPolicy: nil, insertText: { inserted.append(($0, $1)) })
             defer {
                 app.dictation.cancel(); hardware.close(); engine.close(); hud.hide()
                 defaults.removePersistentDomain(forName: suite)

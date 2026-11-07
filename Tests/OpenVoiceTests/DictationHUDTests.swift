@@ -256,7 +256,7 @@ final class DictationHUDTests: XCTestCase {
             })
             var inserted: [String] = []
             let app = AppDelegate(capture: capture, enginePool: DictationEnginePool { _ in engine }, hud: hud,
-                                  defaults: defaults, insertText: { text, _ in inserted.append(text) })
+                                  defaults: defaults, failoverPolicy: nil, insertText: { text, _ in inserted.append(text) })
             defer { app.dictation.cancel(); hardware.close(); engine.close(); hud.hide() }
             app.begin()
             XCTAssertEqual(app.dictation.channel, channel)
@@ -303,7 +303,7 @@ final class DictationHUDTests: XCTestCase {
         var engines: [ParityEngine] = [], inserted: [String] = []
         let pool = DictationEnginePool { _ in let e = ParityEngine(); engines.append(e); return e }
         let app = AppDelegate(capture: DictationCapture(start: hardware.start, stop: hardware.stop),
-                              enginePool: pool, hud: hud, insertText: { text, _ in inserted.append(text) })
+                              enginePool: pool, hud: hud, failoverPolicy: nil, insertText: { text, _ in inserted.append(text) })
         defer { app.dictation.cancel(); hardware.close(); engines.forEach { $0.close() }; hud.hide() }
         try app.dictation.start(channel: .wetype)
         hud.show("", listening: true)
@@ -561,7 +561,7 @@ final class DictationHUDTests: XCTestCase {
             var inserted: [(String, Bool)] = []
             let app = AppDelegate(capture: DictationCapture(start: hardware.start, stop: hardware.stop),
                 enginePool: DictationEnginePool { _ in engine }, hud: hud, defaults: defaults,
-                insertText: { inserted.append(($0, $1)) })
+                failoverPolicy: nil, insertText: { inserted.append(($0, $1)) })
             defer {
                 app.dictation.cancel(); hardware.close(); engine.close(); hud.hide()
                 defaults.removePersistentDomain(forName: suite)
@@ -610,7 +610,7 @@ final class DictationHUDTests: XCTestCase {
             var pasted: [String] = []
             let app = AppDelegate(capture: DictationCapture(start: hardware.start, stop: hardware.stop),
                 enginePool: DictationEnginePool { _ in engine }, hud: hud, defaults: defaults,
-                insertText: { text, _ in pasted.append(text) })
+                failoverPolicy: nil, insertText: { text, _ in pasted.append(text) })
             defer {
                 app.dictation.cancel(); hardware.close(); engine.close(); hud.hide()
                 defaults.removePersistentDomain(forName: suite)
@@ -636,7 +636,7 @@ final class DictationHUDTests: XCTestCase {
             var engines: [ParityEngine] = [], inserted: [String] = []
             let pool = DictationEnginePool { _ in let engine = ParityEngine(); engines.append(engine); return engine }
             let app = AppDelegate(capture: DictationCapture(start: hardware.start, stop: hardware.stop),
-                enginePool: pool, hud: hud, insertText: { text, _ in inserted.append(text) })
+                enginePool: pool, hud: hud, failoverPolicy: nil, insertText: { text, _ in inserted.append(text) })
             defer { app.dictation.cancel(); hardware.close(); engines.forEach { $0.close() }; hud.hide() }
             try app.dictation.start(channel: .wetype)
             hud.show("", listening: true)

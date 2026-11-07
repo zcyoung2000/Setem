@@ -7,7 +7,11 @@ import Network
 /// WSS：HTTP/1.1 101 后发 protobuf 二进制帧（attach → asr/send PCM → complete）。
 final class QwenEngine: ASREngine {
     private let requireFinalResult: Bool
-    init(requireFinalResult: Bool = false) { self.requireFinalResult = requireFinalResult }
+    private let realtime: Bool
+    init(requireFinalResult: Bool = false, realtime: Bool = true) {
+        self.requireFinalResult = requireFinalResult
+        self.realtime = realtime
+    }
     static let ve = "1.2.35.46"
     static let origin = "https://www.qianwen.com"
     static let hmacKey = Data("2d473b000fdb53e617446f805d4eaaacbb324bd16ee9f6d8237abd0ab79c5e48".utf8)
@@ -35,7 +39,7 @@ final class QwenEngine: ASREngine {
     }
 
     func run(audio: AsyncStream<[Int16]>, partial: @escaping (String) -> Void) async throws -> String {
-        let audio = withLeadingSilence(audio)
+        let audio = withLeadingSilence(audio, realtime: realtime)
         var (c, reused) = try await channel(fresh: false)
         do {
             try await c.ensureAttach()

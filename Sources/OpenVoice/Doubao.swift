@@ -3,7 +3,11 @@ import Foundation
 /// 豆包输入法流式识别：asr.AsrRequest protobuf over WSS，Opus 20ms 帧
 final class DoubaoEngine: ASREngine {
     private let requireFinalResult: Bool
-    init(requireFinalResult: Bool = false) { self.requireFinalResult = requireFinalResult }
+    private let realtime: Bool
+    init(requireFinalResult: Bool = false, realtime: Bool = true) {
+        self.requireFinalResult = requireFinalResult
+        self.realtime = realtime
+    }
     private static let wsURL = "wss://frontier-audio-ime-ws.doubao.com/ocean/api/v1/ws"
     /// Official client 1.4.6's built-in ASR key; settings-discovered keys are rejected on some devices.
     static let appKey = "OrnqKvSSrs"
@@ -16,7 +20,7 @@ final class DoubaoEngine: ASREngine {
         // Strict final recognition owns its replay. Avoid retaining the
         // entire segment a second time while strict final recognition is running.
         if requireFinalResult {
-            return try await Self.session(audio, requireFinalResult: true, punctuation: punctuation, partial: partial)
+            return try await Self.session(audio, requireFinalResult: true, punctuation: punctuation, realtime: realtime, partial: partial)
         }
         // Keep the complete recording so a rejected device can be replayed once with a new identity.
         let kept = FrameStore()
@@ -31,7 +35,7 @@ final class DoubaoEngine: ASREngine {
         defer { keeper.cancel() }
 
         do {
-            return try await Self.session(live, requireFinalResult: requireFinalResult, punctuation: punctuation, partial: partial)
+            return try await Self.session(live, requireFinalResult: requireFinalResult, punctuation: punctuation, realtime: realtime, partial: partial)
         } catch let rejection as SessionRejected {
             DoubaoDevice.reset()
             let replay = AsyncStream<[Int16]> { cont in
@@ -41,7 +45,7 @@ final class DoubaoEngine: ASREngine {
                 }
             }
             do {
-                return try await Self.session(replay, requireFinalResult: false, punctuation: punctuation, partial: partial)
+                return try await Self.session(replay, requireFinalResult: false, punctuation: punctuation, realtime: realtime, partial: partial)
             } catch {
                 DoubaoDevice.reset()
                 throw ASRError("\(rejection.message)；换设备重试：\(error.localizedDescription)")
@@ -67,8 +71,8 @@ final class DoubaoEngine: ASREngine {
         }
     }
 
-    private static func session(_ audio: AsyncStream<[Int16]>, requireFinalResult: Bool, punctuation: Bool, partial: @escaping (String) -> Void) async throws -> String {
-        let pacedAudio = withLeadingSilence(audio)
+    private static func session(_ audio: AsyncStream<[Int16]>, requireFinalResult: Bool, punctuation: Bool, realtime: Bool, partial: @escaping (String) -> Void) async throws -> String {
+        let pacedAudio = withLeadingSilence(audio, realtime: realtime)
         let device = try await DoubaoDevice.load()
         let rid = UUID().uuidString.lowercased()
         var request = URLRequest(url: URL(string: "\(Self.wsURL)?aid=401734&device_id=\(device.did)")!)

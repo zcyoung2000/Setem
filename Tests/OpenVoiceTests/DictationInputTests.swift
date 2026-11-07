@@ -109,7 +109,7 @@ final class DictationInputTests: XCTestCase {
             var inserted: [(String, Bool)] = []
             let app = AppDelegate(capture: capture,
                 enginePool: DictationEnginePool { _ in let engine = ParityEngine(); engines.append(engine); return engine },
-                hud: hud, defaults: defaults, hotkey: monitor, insertText: { inserted.append(($0, $1)) })
+                hud: hud, defaults: defaults, hotkey: monitor, failoverPolicy: nil, insertText: { inserted.append(($0, $1)) })
             defer {
                 app.dictation.cancel(); hardware.close(); engines.forEach { $0.close() }; hud.hide()
                 defaults.removePersistentDomain(forName: suite)

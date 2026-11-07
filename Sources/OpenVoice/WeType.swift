@@ -19,14 +19,16 @@ final class WeTypeEngine: ASREngine {
     private let now: () -> TimeInterval
     private let idleReuseLimit: TimeInterval
     private let firstReplyTimeout: TimeInterval
+    private let realtime: Bool
     private var lastReplyAt: TimeInterval?
     private let diagnosticID = UUID().uuidString
 
-    init(idleReuseLimit: TimeInterval = 60, firstReplyTimeout: TimeInterval = 3,
+    init(idleReuseLimit: TimeInterval = 60, firstReplyTimeout: TimeInterval = 3, realtime: Bool = true,
          now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
          makeClient: @escaping () async throws -> WeTypeConnection = { try await WeTypeClient.open() }) {
         self.idleReuseLimit = idleReuseLimit
         self.firstReplyTimeout = firstReplyTimeout
+        self.realtime = realtime
         self.now = now
         self.makeClient = makeClient
     }
@@ -62,7 +64,7 @@ final class WeTypeEngine: ASREngine {
 
     func run(audio: AsyncStream<[Int16]>, partial: @escaping (String) -> Void) async throws -> String {
         let began = now()
-        let audio = withLeadingSilence(audio)
+        let audio = withLeadingSilence(audio, realtime: realtime)
         var (c, reused) = try await channel(fresh: false)
         let encoder = try Opus(application: Opus.audio, bitrate: 64000, complexity: 9)
         let voiceId = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()

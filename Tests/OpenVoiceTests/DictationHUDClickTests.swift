@@ -16,7 +16,7 @@ final class DictationHUDClickTests: XCTestCase {
             enginePool: DictationEnginePool { [unowned self] _ in
                 let engine = ParityEngine(); engines.append(engine); return engine
             }, hud: hud, defaults: defaults,
-            insertText: { [unowned self] in inserted.append(($0, $1)) })
+            failoverPolicy: nil, insertText: { [unowned self] in inserted.append(($0, $1)) })
         init() {
             defaults = UserDefaults(suiteName: suite)!
             defaults.set("wetype", forKey: "channel")

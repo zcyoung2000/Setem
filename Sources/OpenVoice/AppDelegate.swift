@@ -7,6 +7,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let hotkey: HotkeyMonitor
     private let recorder: Recorder
     private let enginePool: DictationEnginePool
+    private let replayPool: DictationEnginePool
+    private let failoverPolicy: DictationFailover.Policy?
     private let providedCapture: DictationCapture?
     private lazy var capture = providedCapture ?? DictationCapture(start: { [unowned self] in try self.recorder.start() },
                                                                   stop: { [unowned self] in self.recorder.stop() })
@@ -21,11 +23,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var hasSession: Bool { dictation.isActive }
     init(capture: DictationCapture? = nil, enginePool: DictationEnginePool? = nil, hud: HUD? = nil,
          defaults: UserDefaults = .standard, hotkey: HotkeyMonitor = HotkeyMonitor(),
+         replayPool: DictationEnginePool? = nil, failoverPolicy: DictationFailover.Policy? = .automatic,
          insertText: @escaping (String, Bool) -> Void = { TextInserter.insert($0, sendsReturn: $1) }) {
         providedCapture = capture
         recorder = Recorder(defaults: defaults)
         self.hotkey = hotkey
-        self.enginePool = enginePool ?? DictationEnginePool()
+        self.enginePool = enginePool ?? DictationEnginePool(factory: {
+            failoverPolicy == nil ? DictationSession.makeEngine($0) : DictationSession.makeFailoverEngine($0)
+        })
+        self.replayPool = replayPool ?? DictationEnginePool(factory: DictationSession.makeReplayEngine)
+        self.failoverPolicy = failoverPolicy
         self.hud = hud ?? HUD()
         self.defaults = defaults
         self.insertText = { text, sendsReturn in
@@ -46,7 +53,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private(set) lazy var dictation: DictationSession = {
         let model = DictationSession(startCapture: { [unowned self] in try self.capture.take() },
                                      stopCapture: { [unowned self] in self.capture.stop() },
-                                     captureFailure: { [unowned self] in self.recorder.failureSnapshot }, enginePool: enginePool)
+                                     captureFailure: { [unowned self] in self.recorder.failureSnapshot }, enginePool: enginePool,
+                                     replayPool: replayPool, failoverPolicy: failoverPolicy)
         model.onCaptureChanged = { [weak self] in self?.captureChanged($0) }
         model.onUpdate = { [weak self] text in
             guard let self else { return }

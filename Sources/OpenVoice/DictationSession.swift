@@ -15,6 +15,8 @@ final class DictationSession {
     private let captureFailure: () -> (() -> String?)
     private let makeEngine: (Channel) -> ASREngine
     private let enginePool: DictationEnginePool?
+    private let replayPool: DictationEnginePool
+    private let failoverPolicy: DictationFailover.Policy?
     private let sleep: (TimeInterval) async throws -> Void
     private let timeout: TimeInterval
     private var generation = 0
@@ -40,6 +42,8 @@ final class DictationSession {
          captureFailure: @escaping () -> (() -> String?) = { { nil } },
          makeEngine: @escaping (Channel) -> ASREngine = DictationSession.makeEngine,
          enginePool: DictationEnginePool? = nil,
+         replayPool: DictationEnginePool? = nil,
+         failoverPolicy: DictationFailover.Policy? = nil,
          timeout: TimeInterval = 15,
          sleep: @escaping (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) }) {
         self.startCapture = startCapture
@@ -47,6 +51,8 @@ final class DictationSession {
         self.captureFailure = captureFailure
         self.makeEngine = makeEngine
         self.enginePool = enginePool
+        self.replayPool = replayPool ?? DictationEnginePool(factory: DictationSession.makeReplayEngine)
+        self.failoverPolicy = failoverPolicy
         self.timeout = timeout
         self.sleep = sleep
     }
@@ -56,6 +62,19 @@ final class DictationSession {
         case .doubao: DoubaoEngine()
         case .wetype: WeTypeEngine()
         case .qwen: QwenEngine()
+        case .offline: OfflineEngine(dedicatedWorker: true, keepsWorkerWarm: true)
+        }
+    }
+
+    nonisolated static func makeReplayEngine(_ channel: Channel) -> ASREngine {
+        makeFailoverEngine(channel, realtime: false)
+    }
+
+    nonisolated static func makeFailoverEngine(_ channel: Channel, realtime: Bool = true) -> ASREngine {
+        switch channel {
+        case .doubao: DoubaoEngine(requireFinalResult: true, realtime: realtime)
+        case .qwen: QwenEngine(requireFinalResult: true, realtime: realtime)
+        case .wetype: WeTypeEngine(realtime: realtime)
         case .offline: OfflineEngine(dedicatedWorker: true, keepsWorkerWarm: true)
         }
     }
@@ -83,17 +102,26 @@ final class DictationSession {
         // Never share a mutable WebSocket/client between concurrent recordings.
         let channel = self.channel
         let pool = enginePool
-        let lease = pool?.take(channel)
-        let engine = lease?.engine ?? makeEngine(channel)
+        let failover = channel != .offline ? failoverPolicy.map {
+            DictationFailover(pool: pool ?? DictationEnginePool(factory: makeEngine), replayPool: replayPool,
+                              policy: $0, captureFailure: captureFailure)
+        } : nil
+        let lease = failover == nil ? pool?.take(channel) : nil
+        let engine: ASREngine? = failover == nil ? (lease?.engine ?? makeEngine(channel)) : nil
         tasks[id] = Task { [weak self] in
             do {
-                await lease?.ready()
-                try Task.checkCancellation()
-                let text = try await engine.run(audio: audio) { [weak self] partial in
+                let partial: (String) -> Void = { [weak self] partial in
                     DispatchQueue.main.async { [weak self] in self?.update(partial, id: id, generation: gen) }
                 }
+                let text: String
+                if let failover { text = try await failover.run(audio: audio, channel: channel, partial: partial) }
+                else {
+                    await lease?.ready()
+                    try Task.checkCancellation()
+                    text = try await engine!.run(audio: audio, partial: partial)
+                }
                 let failure = captureFailure()
-                if !Task.isCancelled, failure == nil { pool?.reuse(engine, channel: channel) }
+                if let engine, !Task.isCancelled, failure == nil { pool?.reuse(engine, channel: channel) }
                 // Use the same FIFO as partials, including when a vendor returns/throws immediately.
                 DispatchQueue.main.async { [weak self] in
                     self?.complete(id: id, generation: gen, text: text, error: failure, captureFailed: failure != nil)
