@@ -35,6 +35,7 @@ final class PlaybackHardwareDouble: PlaybackHardware {
 final class DictationRecorderTests: XCTestCase {
     private final class Input: RecordingSource {
         var onLevel: ((Float) -> Void)?
+        var onFailure: ((Error) -> Void)?
         var output: AsyncStream<[Int16]>.Continuation?
         var stops = 0
         var fails = false
