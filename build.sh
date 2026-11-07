@@ -1,5 +1,5 @@
 #!/bin/bash
-# 构建 OpenVoice.app（用固定证书签名，重建后辅助功能/麦克风授权不丢）
+# 构建 Setem.app（用固定证书签名，重建后辅助功能/麦克风授权不丢）
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -37,10 +37,10 @@ if [ ! -f "$ICNS" ] || [ docs/icon.png -nt "$ICNS" ] || [ Scripts/icon.swift -nt
     rm -rf "$SET" build/icon_1024.png
 fi
 
-APP=build/OpenVoice.app
+APP=build/Setem.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN" "$APP/Contents/MacOS/"
+cp "$BIN" "$APP/Contents/MacOS/Setem"
 cp "$ICNS" "$APP/Contents/Resources/"
 VERSION="${VERSION:-0.1}"
 BUILD="${BUILD:-1}"
@@ -50,8 +50,8 @@ cat > "$APP/Contents/Info.plist" <<EOF
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key><string>do.j3.openvoice</string>
-    <key>CFBundleName</key><string>OpenVoice</string>
-    <key>CFBundleExecutable</key><string>OpenVoice</string>
+    <key>CFBundleName</key><string>Setem</string>
+    <key>CFBundleExecutable</key><string>Setem</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
