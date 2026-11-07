@@ -1,10 +1,12 @@
 import AppKit
+import OSLog
 import SwiftUI
 
 enum DictationEvents { static let marker: Int64 = 0x564B_4559 }
 
 /// 长按键：按住超过阈值开始、松开结束；发送模式会携带到定稿处理。点按快捷键：单个修饰键在阈值内松开，或组合键按下（吞掉不传给前台 App）
 final class HotkeyMonitor {
+    private static let log = Logger(subsystem: "do.j3.openvoice", category: "Hotkey")
     struct Configuration {
         let hold: Hotkey
         let send: Hotkey
@@ -72,6 +74,23 @@ final class HotkeyMonitor {
     /// 返回 true 表示吞掉该事件
     func handle(_ type: CGEventType, _ event: CGEvent) -> Bool {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            // Delivery may have stopped before key-up. Re-enabling the tap alone
+            // leaves pre-roll/holds alive and the next key-down looking repeated.
+            let wasActive = active
+            let sendsReturn = holdKind == .send
+            holdToken += 1
+            timer?.invalidate()
+            timer = nil
+            downCode = nil
+            swallowedCode = nil
+            active = false
+            holdKind = nil
+            cancelled = true
+            Self.log.notice("event-tap-disabled type=\(type.rawValue) activeHold=\(wasActive)")
+            // End a hold through the usual finalization path, preserving its tail
+            // and final text. A manual tap recording keeps its explicit stop rule.
+            if wasActive { onRelease(sendsReturn) }
+            else { onCancel() }
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
             return false
         }

@@ -4,12 +4,96 @@ import XCTest
 
 @MainActor
 final class DictationInputTests: XCTestCase {
+    func testDisabledEventTapDisarmsPendingHoldAndAcceptsTheNextTap() throws {
+        let wasPaused = HotkeyMonitor.paused
+        HotkeyMonitor.paused = false
+        defer { HotkeyMonitor.paused = wasPaused }
+        for disabled in [CGEventType.tapDisabledByTimeout, .tapDisabledByUserInput] {
+            let hardware = ParityCapture()
+            defer { hardware.close() }
+            let capture = DictationCapture(start: hardware.start, stop: hardware.stop)
+            var fires: [() -> Void] = [], confirmations = 0, taps = 0
+            let monitor = HotkeyMonitor(configuration: {
+                .init(hold: .rightOption, send: .rightControl,
+                      tap: Shortcut(keyCode: 61, modifiers: 0, name: "右 ⌥"))
+            }, scheduleHold: { delay, fire in
+                fires.append(fire)
+                return Timer(timeInterval: delay, repeats: false) { _ in }
+            })
+            monitor.onPress = { do { try capture.arm() } catch { XCTFail("\(error)") } }
+            monitor.onCancel = capture.disarm
+            monitor.onLongPress = { _ in confirmations += 1 }
+            monitor.onTap = { taps += 1; capture.disarm() }
+            _ = monitor.handle(.flagsChanged, try holdEvent(true))
+            XCTAssertTrue(capture.isPrimed)
+            _ = monitor.handle(disabled, try holdEvent(false))
+            XCTAssertFalse(capture.isPrimed, "A lost key-up must not leave pre-roll using the microphone")
+            fires[0]() // A queued pre-disable hold timer cannot start a recording.
+            XCTAssertEqual(confirmations, 0)
+            // The actual release happened while delivery was disabled.
+            _ = monitor.handle(.flagsChanged, try holdEvent(true))
+            _ = monitor.handle(.flagsChanged, try holdEvent(false))
+            XCTAssertEqual(taps, 1, "The first tap after recovery must work")
+            XCTAssertFalse(capture.isPrimed)
+        }
+    }
+
+    func testDisabledEventTapStopsHeldCaptureWithoutDiscardingItsExactFinal() async throws {
+        let wasPaused = HotkeyMonitor.paused
+        HotkeyMonitor.paused = false
+        defer { HotkeyMonitor.paused = wasPaused }
+        for disabled in [CGEventType.tapDisabledByTimeout, .tapDisabledByUserInput] {
+            let hardware = ParityCapture()
+            let capture = DictationCapture(start: hardware.start, stop: hardware.stop)
+            let engine = ParityEngine()
+            let model = DictationSession(startCapture: capture.take, stopCapture: capture.stop, makeEngine: { _ in engine })
+            defer { model.cancel(); hardware.close(); engine.close() }
+            var fires: [() -> Void] = [], results: [DictationSession.Result] = []
+            model.onFinish = { results.append($0) }
+            let monitor = HotkeyMonitor(configuration: { .init(hold: .rightOption, send: .rightControl, tap: nil) },
+                                        scheduleHold: { delay, fire in
+                fires.append(fire)
+                return Timer(timeInterval: delay, repeats: false) { _ in }
+            })
+            monitor.onPress = { do { try capture.arm() } catch { XCTFail("\(error)") } }
+            monitor.onCancel = capture.disarm
+            monitor.onLongPress = { _ in do { try model.start(channel: .wetype) } catch { XCTFail("\(error)") } }
+            monitor.onRelease = { _ in model.end() }
+            _ = monitor.handle(.flagsChanged, try holdEvent(true))
+            fires[0]()
+            try await parityEventually { engine.rounds.count == 1 }
+            hardware.send(101)
+            engine.rounds[0].partial("完整临时稿")
+            try await parityEventually { model.text == "完整临时稿" }
+            hardware.tail = 102
+            _ = monitor.handle(disabled, try holdEvent(false))
+            XCTAssertFalse(model.isRecording, "End a hold whose release may never arrive")
+            XCTAssertTrue(model.isActive, "Keep recognizing all captured audio")
+            XCTAssertTrue(results.isEmpty)
+            if model.isRecording { model.end() } // Bound the regression on the broken implementation.
+            try await parityEventually { engine.rounds[0].ended }
+            XCTAssertEqual(engine.rounds[0].samples, [101, 102])
+            engine.rounds[0].resolve(.success("完整润色稿，包含最后一个尾字。"))
+            try await parityEventually { results.count == 1 }
+            XCTAssertEqual(results, [.init(text: "完整润色稿，包含最后一个尾字。", error: nil, sendsReturn: false)])
+            _ = monitor.handle(.flagsChanged, try holdEvent(true))
+            XCTAssertEqual(fires.count, 2, "A new hold must start without needing an extra press")
+            if fires.count == 2 {
+                fires[1]()
+                XCTAssertTrue(model.isRecording)
+                _ = monitor.handle(.flagsChanged, try holdEvent(false))
+                XCTAssertFalse(model.isRecording)
+            }
+        }
+    }
+
     func testRepeatedTapStopsThenWaitsWithoutCancellingOrStartingAnotherSegment() async throws {
         _ = NSApplication.shared
         let wasPaused = HotkeyMonitor.paused
         HotkeyMonitor.paused = false
         defer { HotkeyMonitor.paused = wasPaused }
-        for modifierTap in [false, true] {
+        let interruptions: [CGEventType?] = [nil, .tapDisabledByTimeout, .tapDisabledByUserInput]
+        for (modifierTap, interruption) in [false, true].flatMap({ modifier in interruptions.map { (modifier, $0) } }) {
             let suite = "OpenVoice-ManualTap-" + UUID().uuidString
             let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
             defaults.set("wetype", forKey: "channel")
@@ -46,6 +130,17 @@ final class DictationInputTests: XCTestCase {
             hardware.send(101)
             first.partial("已经说出的完整内容")
             try await parityEventually { app.dictation.text == "已经说出的完整内容" }
+            if let interruption {
+                let event = try XCTUnwrap(CGEvent(keyboardEventSource: CGEventSource(stateID: .privateState),
+                                                 virtualKey: UInt16(shortcut.keyCode), keyDown: true))
+                if modifierTap {
+                    event.flags = .maskCommand
+                    _ = monitor.handle(.flagsChanged, event)
+                }
+                _ = monitor.handle(interruption, event)
+                XCTAssertTrue(app.dictation.isRecording, "A tap recording still requires an explicit stop")
+                XCTAssertEqual(hardware.stops, 0)
+            }
             hardware.tail = 102
             try tap()
             XCTAssertFalse(app.dictation.isRecording)

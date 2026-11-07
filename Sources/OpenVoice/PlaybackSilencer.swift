@@ -81,8 +81,6 @@ final class PlaybackSilencer {
         guard !clients.isEmpty else { lock.unlock(); return }
         do {
             try reconcile()
-            stopObserving?()
-            stopObserving = hardware.observe { [weak self] in self?.routeChanged() }
             lock.unlock()
         }
         catch {
@@ -141,6 +139,59 @@ final class PlaybackSilencer {
     static var unavailable: ASRError {
         ASRError("无法静音当前输出设备，请切换输出设备或关闭“录音时静音电脑声音”")
     }
+}
+
+/// Keep unchanged registrations alive: registering a Core Audio listener can
+/// itself enqueue metadata notifications. Replacing every listener in response
+/// to those notifications can keep the main queue busy indefinitely.
+final class PlaybackRouteObservation<Property: Hashable> {
+    private let lock = NSRecursiveLock()
+    private let properties: () -> Set<Property>
+    private let install: (Property, @escaping () -> Void) -> (() -> Void)?
+    private let changed: () -> Void
+    private var installed: [Property: () -> Void] = [:]
+    private var active = true
+
+    init(properties: @escaping () -> Set<Property>,
+         install: @escaping (Property, @escaping () -> Void) -> (() -> Void)?,
+         changed: @escaping () -> Void) {
+        self.properties = properties
+        self.install = install
+        self.changed = changed
+        refresh()
+    }
+
+    private func refresh() {
+        let wanted = properties()
+        for property in Array(installed.keys) where !wanted.contains(property) {
+            installed.removeValue(forKey: property)?()
+        }
+        for property in wanted where installed[property] == nil {
+            installed[property] = install(property) { [weak self] in
+                self?.notify()
+            }
+        }
+    }
+
+    private func notify() {
+        lock.lock()
+        guard active else { lock.unlock(); return }
+        refresh()
+        lock.unlock()
+        // The silencer owns a separate lock; never call it under this lock.
+        changed()
+    }
+
+    func stop() {
+        lock.lock()
+        active = false
+        let removals = Array(installed.values)
+        installed.removeAll()
+        lock.unlock()
+        removals.forEach { $0() }
+    }
+
+    deinit { stop() }
 }
 
 /// Uses device controls, never an audio tap, aggregate device, or playback loop.
@@ -272,28 +323,41 @@ final class CoreAudioPlaybackHardware: PlaybackHardware {
     }
 
     func observe(_ changed: @escaping () -> Void) -> () -> Void {
-        // Only route metadata is observed, only while a capture owns a lease.
-        // Re-subscribe after a route change to cover a jack/data-source switch.
-        var properties: [(AudioObjectID, AudioObjectPropertyAddress)] = [
-            (system, address(kAudioHardwarePropertyDefaultOutputDevice, scope: kAudioObjectPropertyScopeGlobal)),
-            (system, address(kAudioHardwarePropertyDefaultSystemOutputDevice, scope: kAudioObjectPropertyScopeGlobal)),
-            (system, address(kAudioHardwarePropertyDevices, scope: kAudioObjectPropertyScopeGlobal))
-        ]
-        for device in devices() {
-            properties.append((device, address(kAudioDevicePropertyDataSource)))
-            properties.append((device, address(kAudioDevicePropertyStreams)))
-        }
-        let callback: AudioObjectPropertyListenerBlock = { _, _ in changed() }
-        var installed: [(AudioObjectID, AudioObjectPropertyAddress)] = []
-        for (object, var property) in properties {
-            if AudioObjectAddPropertyListenerBlock(object, &property, .main, callback) == noErr {
-                installed.append((object, property))
+        struct Property: Hashable {
+            let object: AudioObjectID
+            let selector: AudioObjectPropertySelector
+            let scope: AudioObjectPropertyScope
+            let element: AudioObjectPropertyElement
+            init(_ object: AudioObjectID, _ address: AudioObjectPropertyAddress) {
+                self.object = object; selector = address.mSelector
+                scope = address.mScope; element = address.mElement
+            }
+            var address: AudioObjectPropertyAddress {
+                .init(mSelector: selector, mScope: scope, mElement: element)
             }
         }
-        return {
-            for (object, var property) in installed {
-                AudioObjectRemovePropertyListenerBlock(object, &property, .main, callback)
+        // Keep system listeners and unchanged device listeners installed. New
+        // routes still acquire data-source/stream listeners before reconciling.
+        let observation = PlaybackRouteObservation(properties: { [self] in
+            var properties: [(AudioObjectID, AudioObjectPropertyAddress)] = [
+                (system, address(kAudioHardwarePropertyDefaultOutputDevice, scope: kAudioObjectPropertyScopeGlobal)),
+                (system, address(kAudioHardwarePropertyDefaultSystemOutputDevice, scope: kAudioObjectPropertyScopeGlobal)),
+                (system, address(kAudioHardwarePropertyDevices, scope: kAudioObjectPropertyScopeGlobal))
+            ]
+            for device in devices() {
+                properties.append((device, address(kAudioDevicePropertyDataSource)))
+                properties.append((device, address(kAudioDevicePropertyStreams)))
             }
-        }
+            return Set(properties.map { Property($0.0, $0.1) })
+        }, install: { property, notify in
+            let callback: AudioObjectPropertyListenerBlock = { _, _ in notify() }
+            var address = property.address
+            guard AudioObjectAddPropertyListenerBlock(property.object, &address, .main, callback) == noErr else { return nil }
+            return {
+                var address = property.address
+                AudioObjectRemovePropertyListenerBlock(property.object, &address, .main, callback)
+            }
+        }, changed: changed)
+        return { observation.stop() }
     }
 }

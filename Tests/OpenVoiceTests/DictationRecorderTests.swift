@@ -11,6 +11,7 @@ final class PlaybackHardwareDouble: PlaybackHardware {
     var changed: (() -> Void)?
     var failControl: PlaybackControl?
     var watches = 0
+    var subscriptions = 0
     init() {
         route = [.init(isHeadphones: false, controls: [speaker])]
         values = [speaker: 0, volume: 0.6]
@@ -28,6 +29,7 @@ final class PlaybackHardwareDouble: PlaybackHardware {
     func observe(_ changed: @escaping () -> Void) -> () -> Void {
         self.changed = changed
         watches += 1
+        subscriptions += 1
         return { [weak self] in self?.changed = nil; self?.watches -= 1 }
     }
 }
@@ -212,6 +214,71 @@ final class DictationRecorderTests: XCTestCase {
 }
 
 final class DictationPlaybackMuteTests: XCTestCase {
+    func testListenerInstallationNotificationsDrainAndRouteChangesOnlyReplaceChangedDevices() throws {
+        var route: Set<String> = ["system", "speaker"]
+        var installed: [String: () -> Void] = [:]
+        var queued: [() -> Void] = []
+        var additions: [String] = [], removals: [String] = []
+        var changes = 0
+        let observation = PlaybackRouteObservation(properties: { route }, install: { property, notify in
+            additions.append(property)
+            installed[property] = notify
+            queued.append(notify) // Core Audio may notify immediately after installation.
+            return { removals.append(property); installed[property] = nil }
+        }, changed: { changes += 1 })
+        defer { observation.stop() }
+        func drain() {
+            var delivered = 0
+            while !queued.isEmpty, delivered < 20 {
+                let notify = queued.removeFirst()
+                notify()
+                delivered += 1
+            }
+            XCTAssertTrue(queued.isEmpty, "Listener notifications must settle without a feedback loop")
+        }
+        drain()
+        XCTAssertEqual(additions.count, 2)
+        XCTAssertEqual(changes, 2)
+        let systemNotification = try XCTUnwrap(installed["system"])
+        for _ in 0..<100 { systemNotification() }
+        XCTAssertEqual(additions.count, 2)
+        XCTAssertTrue(removals.isEmpty)
+        let staleSpeakerNotification = try XCTUnwrap(installed["speaker"])
+        route = ["system", "headphones"]
+        systemNotification()
+        drain()
+        XCTAssertEqual(additions.count, 3)
+        XCTAssertEqual(removals, ["speaker"])
+        XCTAssertEqual(Set(installed.keys), route)
+        observation.stop()
+        let count = changes
+        staleSpeakerNotification()
+        systemNotification()
+        XCTAssertEqual(changes, count)
+        XCTAssertTrue(installed.isEmpty)
+        XCTAssertEqual(additions.count, 3)
+        XCTAssertEqual(removals.count, 3)
+    }
+
+    func testRepeatedRouteNotificationsKeepOneSubscriptionAndRestorePlayback() throws {
+        let hardware = PlaybackHardwareDouble()
+        let silencer = PlaybackSilencer(hardware: hardware)
+        let lease = try silencer.acquire()
+        let notification = try XCTUnwrap(hardware.changed)
+        // Listener installation can itself queue Core Audio route notifications.
+        // Processing those notifications must not install another listener.
+        for _ in 0..<100 { notification() }
+        XCTAssertEqual(hardware.subscriptions, 1)
+        XCTAssertEqual(hardware.writes.count, 1)
+        hardware.route = [.init(isHeadphones: true, controls: [])]
+        notification()
+        XCTAssertEqual(hardware.values[hardware.speaker], 0)
+        lease.finish()
+        notification() // A queued notification after teardown cannot re-subscribe.
+        XCTAssertEqual(hardware.watches, 0)
+        XCTAssertEqual(hardware.subscriptions, 1)
+    }
+
     func testHeadphonesSkipMuteButBluetoothOrUSBUnknownTypesDoNot() throws {
         XCTAssertTrue(PlaybackOutput.headphones(terminalTypes: [kAudioStreamTerminalTypeHeadphones]))
         XCTAssertFalse(PlaybackOutput.headphones(terminalTypes: [kAudioStreamTerminalTypeSpeaker]))
