@@ -24,6 +24,9 @@ final class HotkeyMonitor {
     }
 
     var onPress: () -> Void = {}
+    /// A standalone tap modifier can skip pre-roll while a final is pending.
+    /// Shared hold/tap keys still use onPress to preserve the start of a hold.
+    var onTapPress: (() -> Void)?
     var onCancel: () -> Void = {}
     var onLongPress: (Bool) -> Void = { _ in }
     var onRelease: (Bool) -> Void = { _ in }
@@ -119,7 +122,8 @@ final class HotkeyMonitor {
                 let kind: HoldKind? = code == hold.keyCode ? .regular : code == sendCode ? .send : nil
                 pressedAt = Date()
                 cancelled = false
-                onPress()
+                if kind == nil, let onTapPress { onTapPress() }
+                else { onPress() }
                 if let kind { beginPendingHold(kind) }
             } else if !pressed, downCode != nil {
                 downCode = nil

@@ -33,7 +33,6 @@ final class DictationSession {
     var onFinish: (Result) -> Void = { _ in }
     var onCancel: (String, String?) -> Void = { _, _ in }
     var onCaptureChanged: (Bool) -> Void = { _ in }
-    var onSpeech: () -> Void = {}
 
     init(startCapture: @escaping () throws -> AsyncStream<[Int16]>,
          stopCapture: @escaping () -> Void,
@@ -122,8 +121,7 @@ final class DictationSession {
 
     private func update(_ text: String, id: Int, generation gen: Int) {
         guard isActive, generation == gen, !transcript.hasIdenticalPartial(id, text: text),
-              let changed = transcript.update(id, text: text) else { return }
-        if changed { onSpeech() }
+              transcript.update(id, text: text) != nil else { return }
         onUpdate(self.text)
     }
 

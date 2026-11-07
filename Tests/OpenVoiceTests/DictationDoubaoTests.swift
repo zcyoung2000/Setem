@@ -167,17 +167,16 @@ final class DictationDoubaoTests: XCTestCase {
                                          makeEngine: { _ in engine })
             defer { model.cancel(); capture.close(); engine.responses.finish() }
             var results: [DictationSession.Result] = []
-            var speech = 0
+            var previews: [String] = []
             model.onFinish = { results.append($0) }
-            model.onSpeech = { speech += 1 }
+            model.onUpdate = { previews.append($0) }
             try model.start(channel: .doubao)
             try await parityEventually { engine.started }
             engine.responses.yield(#"{"results":[{"index":0,"text":"第一句。","extra":{"nonstream_result":true}}]}"#)
             try await parityEventually { model.text == "第一句。" }
-            let oldSpeech = speech
             engine.responses.yield(#"{"results":[{"text":"第一句。第二句尾字。"}]}"#)
             try await parityEventually { model.text == "第一句。第二句尾字。" }
-            XCTAssertEqual(speech, oldSpeech + 1)
+            XCTAssertEqual(previews.last, "第一句。第二句尾字。")
             model.end()
             engine.responses.finish(throwing: fails ? ASRError("controlled disconnect") : nil)
             try await parityEventually { results.count == 1 }

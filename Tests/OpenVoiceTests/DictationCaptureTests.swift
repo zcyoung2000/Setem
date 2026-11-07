@@ -69,63 +69,6 @@ final class DictationCaptureTests: XCTestCase {
         XCTAssertEqual(hardware.stops, 2)
     }
 
-    func testQuietSpeechExtendsActivityButRepeatedTextDoesNot() async throws {
-        var now: TimeInterval = 0
-        let activity = DictationActivity(now: { now })
-        let hardware = ParityCapture()
-        var engines: [ParityEngine] = []
-        let model = DictationSession(startCapture: hardware.start, stopCapture: hardware.stop, makeEngine: { _ in
-            let engine = ParityEngine(); engines.append(engine); return engine
-        })
-        var updates = 0
-        model.onCaptureChanged = { $0 ? activity.start() : activity.stop() }
-        model.onSpeech = { activity.speaking() }
-        model.onUpdate = { _ in updates += 1 }
-        defer { model.cancel(); hardware.close(); engines.forEach { $0.close() } }
-        try model.start(channel: .wetype)
-        try await parityEventually { engines[0].rounds.count == 1 }
-        now = 7.9
-        engines[0].rounds[0].partial("小声说的尾字")
-        try await parityEventually { updates == 1 }
-        now = 8.9
-        XCTAssertFalse(activity.shouldStop(level: 0.01, silence: 1.5))
-        engines[0].rounds[0].partial("小声说的尾字")
-        // Drain the same main-queue FIFO used by partial callbacks. Identical
-        // text now intentionally skips UI updates, but must still not count as speech.
-        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
-            DispatchQueue.main.async { done.resume() }
-        }
-        XCTAssertEqual(updates, 1)
-        now = 9.5
-        XCTAssertTrue(activity.shouldStop(level: 0.01, silence: 1.5))
-        model.end()
-        try model.start(channel: .wetype)
-        try await parityEventually { engines[1].rounds.count == 1 }
-        now = 16.5
-        engines[0].rounds[0].resolve(.success("上一段润色定稿。"))
-        try await parityEventually { model.text == "上一段润色定稿。" }
-        now = 17.6
-        // A late final is not new speech in the current recording.
-        XCTAssertTrue(activity.shouldStop(level: 0, silence: 1.5))
-        XCTAssertTrue(model.isRecording)
-    }
-
-    func testSilenceCanBeDisabledAndInitialSilenceExpires() {
-        var now: TimeInterval = 0
-        let activity = DictationActivity(now: { now })
-        activity.start()
-        now = 8
-        XCTAssertFalse(activity.shouldStop(level: 0, silence: 1.5))
-        now = 8.01
-        XCTAssertTrue(activity.shouldStop(level: 0, silence: 1.5))
-        XCTAssertFalse(activity.shouldStop(level: 0, silence: 1.5, enabled: false))
-        XCTAssertFalse(activity.shouldStop(level: 0.31, silence: 1.5))
-        now = 9.6
-        XCTAssertTrue(activity.shouldStop(level: 0.3, silence: 1.5))
-        activity.stop()
-        XCTAssertFalse(activity.shouldStop(level: 0, silence: 1.5))
-    }
-
     func testTranscriptMatchesUpstreamJoinAndEmptyFinalRules() {
         for streaming in [false, true] {
             var transcript = DictationTranscript()

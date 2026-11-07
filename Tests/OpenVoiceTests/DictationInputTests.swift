@@ -4,6 +4,76 @@ import XCTest
 
 @MainActor
 final class DictationInputTests: XCTestCase {
+    func testRepeatedTapStopsThenWaitsWithoutCancellingOrStartingAnotherSegment() async throws {
+        _ = NSApplication.shared
+        let wasPaused = HotkeyMonitor.paused
+        HotkeyMonitor.paused = false
+        defer { HotkeyMonitor.paused = wasPaused }
+        for modifierTap in [false, true] {
+            let suite = "OpenVoice-ManualTap-" + UUID().uuidString
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+            defaults.set("wetype", forKey: "channel")
+            defaults.set(true, forKey: "silenceStop")
+            defaults.set(1.0, forKey: "silence")
+            let shortcut = modifierTap ? Shortcut(keyCode: 55, modifiers: 0, name: "左 ⌘")
+                : Shortcut(keyCode: 49, modifiers: CGEventFlags([.maskControl, .maskShift]).rawValue, name: "Space")
+            let monitor = HotkeyMonitor(configuration: { .init(hold: .rightOption, send: .rightControl, tap: shortcut, meeting: nil) })
+            let hardware = ParityCapture()
+            let capture = DictationCapture(start: hardware.start, stop: hardware.stop)
+            let hud = HUD(defaults: defaults, reduceMotion: { true })
+            var engines: [ParityEngine] = []
+            var inserted: [(String, Bool)] = []
+            let app = AppDelegate(capture: capture,
+                enginePool: DictationEnginePool { _ in let engine = ParityEngine(); engines.append(engine); return engine },
+                hud: hud, defaults: defaults, hotkey: monitor, insertText: { inserted.append(($0, $1)) })
+            defer {
+                app.dictation.cancel(); hardware.close(); engines.forEach { $0.close() }; hud.hide()
+                defaults.removePersistentDomain(forName: suite)
+            }
+            func tap() throws {
+                for pressed in [true, false] {
+                    let event = try XCTUnwrap(CGEvent(keyboardEventSource: CGEventSource(stateID: .privateState),
+                        virtualKey: UInt16(shortcut.keyCode), keyDown: pressed))
+                    event.flags = modifierTap ? (pressed ? .maskCommand : []) : [.maskControl, .maskShift]
+                    let type: CGEventType = modifierTap ? .flagsChanged : (pressed ? .keyDown : .keyUp)
+                    event.type = type
+                    _ = monitor.handle(type, event)
+                }
+            }
+            try tap()
+            try await parityEventually { engines.first?.rounds.count == 1 }
+            let first = engines[0].rounds[0]
+            hardware.send(101)
+            first.partial("已经说出的完整内容")
+            try await parityEventually { app.dictation.text == "已经说出的完整内容" }
+            hardware.tail = 102
+            try tap()
+            XCTAssertFalse(app.dictation.isRecording)
+            XCTAssertTrue(app.dictation.isActive)
+            XCTAssertEqual(hardware.stops, 1)
+            XCTAssertTrue(inserted.isEmpty)
+            try await parityEventually { first.ended }
+            XCTAssertEqual(first.samples, [101, 102])
+            let captures = hardware.sources.count
+            let stops = hardware.stops
+            try tap() // A repeated tap while thinking must leave this final pending.
+            await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+                DispatchQueue.main.async { done.resume() }
+            }
+            XCTAssertFalse(app.dictation.isRecording)
+            XCTAssertFalse(capture.isPrimed)
+            XCTAssertEqual(hardware.sources.count, captures, "Thinking taps must not reopen the microphone")
+            XCTAssertEqual(hardware.stops, stops)
+            XCTAssertEqual(engines.flatMap(\.rounds).count, 1)
+            XCTAssertTrue(inserted.isEmpty)
+            first.resolve(.success("完整润色稿，保留最后一个尾字。"))
+            try await parityEventually { inserted.count == 1 }
+            XCTAssertEqual(inserted[0].0, "完整润色稿，保留最后一个尾字。")
+            XCTAssertFalse(inserted[0].1)
+            XCTAssertFalse(app.dictation.isActive)
+        }
+    }
+
     private func holdEvent(_ pressed: Bool) throws -> CGEvent {
         let event = try XCTUnwrap(CGEvent(keyboardEventSource: CGEventSource(stateID: .privateState), virtualKey: 61, keyDown: pressed))
         event.type = .flagsChanged

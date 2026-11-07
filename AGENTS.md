@@ -14,7 +14,7 @@
 - Lease engines exclusively through `DictationEnginePool`; await preparation before
   recognition and return only successful, uncancelled engines. Cancel and join old
   socket readers before reusing a connection.
-- Candidate confirmation must wait for a final row. Keep partial speech activity,
+- Candidate confirmation must wait for a final row. Keep partial previews and manual tap-to-stop,
   cancellation/timeouts, synthetic key filtering and empty-final semantics covered.
 - For new missing-text bugs, add a controlled-timing regression with exact expected
   final text before changing the implementation.

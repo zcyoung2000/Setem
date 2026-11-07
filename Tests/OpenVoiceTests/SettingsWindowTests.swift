@@ -5,6 +5,32 @@ import XCTest
 
 @MainActor
 final class SettingsWindowTests: XCTestCase {
+    func testHotkeyPageRemovesSilenceControlsAndRetiredPreferencesOnReopen() async throws {
+        _ = NSApplication.shared
+        let suite = "OpenVoice-ManualStopSettings-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "silenceStop")
+        defaults.set(1.0, forKey: "silence")
+        for _ in 0..<2 {
+            let window = SettingsWindow(meeting: MeetingSession(), defaults: defaults)
+            defer { window.close() }
+            window.makeKeyAndOrderFront(nil)
+            try await settle(window)
+            try press("快捷键", in: window)
+            try await settle(window)
+            let visibleLabels = elements(in: window).flatMap { titles($0) + [label($0)].compactMap { $0 } }
+            XCTAssertFalse(visibleLabels.contains { $0.contains("停顿自动结束") || $0.contains("静音时长") })
+            XCTAssertNil(defaults.object(forKey: "silenceStop"))
+            XCTAssertNil(defaults.object(forKey: "silence"))
+            try press("点按快捷键", in: window)
+            XCTAssertTrue(HotkeyMonitor.paused, "The remaining shortcut recorder still works")
+            window.close()
+            try await settle(window)
+            XCTAssertFalse(HotkeyMonitor.paused)
+        }
+    }
+
     private func nativeViews(in root: NSView) -> [NSView] {
         [root] + root.subviews.flatMap { nativeViews(in: $0) }
     }

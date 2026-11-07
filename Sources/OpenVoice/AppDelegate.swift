@@ -4,11 +4,10 @@ import SwiftUI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
-    private let hotkey = HotkeyMonitor()
+    private let hotkey: HotkeyMonitor
     private let recorder = Recorder()
     private let enginePool: DictationEnginePool
     private let providedCapture: DictationCapture?
-    private let activity = DictationActivity()
     private lazy var capture = providedCapture ?? DictationCapture(start: { [unowned self] in try self.recorder.start() },
                                                                   stop: { [unowned self] in self.recorder.stop() })
     private let hud: HUD
@@ -20,13 +19,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private var settingsWindow: NSWindow?
     private var recording = false
-    /// 点按开启的会话：静音超时自动结束
-    private var autoStop = false
+    /// 点按开启的持续录音，由快捷键或浮窗手动结束。
+    private var tapRecording = false
     private var hasSession: Bool { dictation.isActive }
     init(capture: DictationCapture? = nil, enginePool: DictationEnginePool? = nil, hud: HUD? = nil,
-         defaults: UserDefaults = .standard,
+         defaults: UserDefaults = .standard, hotkey: HotkeyMonitor = HotkeyMonitor(),
          insertText: @escaping (String, Bool) -> Void = { TextInserter.insert($0, sendsReturn: $1) }) {
         providedCapture = capture
+        self.hotkey = hotkey
         self.enginePool = enginePool ?? DictationEnginePool()
         self.hud = hud ?? HUD()
         self.defaults = defaults
@@ -37,17 +37,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         super.init()
         Channel.migrateLegacySelection(in: defaults)
+        Hotkey.removeRetiredSettings(in: defaults)
         self.hud.onStopRecording = { [weak self] in
-            guard let self, self.recording, self.autoStop else { return }
+            guard let self, self.recording, self.tapRecording else { return }
             self.end()
         }
+        configureHotkeys()
     }
 
     private(set) lazy var dictation: DictationSession = {
         let model = DictationSession(startCapture: { [unowned self] in try self.capture.take() },
                                      stopCapture: { [unowned self] in self.capture.stop() }, enginePool: enginePool)
         model.onCaptureChanged = { [weak self] in self?.captureChanged($0) }
-        model.onSpeech = { [weak self] in self?.activity.speaking() }
         model.onUpdate = { [weak self] text in
             guard let self else { return }
             self.hud.update(text)
@@ -64,12 +65,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }()
     func applicationDidFinishLaunching(_ notification: Notification) {
         migrateLegacyState()
+        Hotkey.removeRetiredSettings(in: defaults)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         setIcon(recording: false)
         recorder.onLevel = { [weak self] v in
             DispatchQueue.main.async {
                 self?.hud.level(v)
-                self?.checkSilence(v)
             }
         }
         let menu = NSMenu()
@@ -91,26 +92,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             AVCaptureDevice.requestAccess(for: .audio) { _ in }
         }
 
+        hotkey.start()
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            self?.handleSettingsShortcut(event) == true ? nil : event
+        }
+    }
+
+    private func configureHotkeys() {
         hotkey.onPress = { [weak self] in self?.primeRecording() }
+        hotkey.onTapPress = { [weak self] in
+            guard let self, !self.hasSession else { return }
+            self.primeRecording()
+        }
         hotkey.onCancel = { [weak self] in self?.capture.disarm() }
         hotkey.onLongPress = { [weak self] send in self?.begin(sendOnFinish: send) }
         hotkey.onRelease = { [weak self] _ in
-            if self?.autoStop == false { self?.end() }
+            if self?.tapRecording == false { self?.end() }
         }
         hotkey.onTap = { [weak self] in
             guard let self else { return }
             guard !self.meeting.isCapturing else { self.meetingPanel?.show(); return }
-            if self.recording { self.end() }
-            else { self.begin(autoStop: true, sendOnFinish: false) }
+            // An existing session either stops capturing or keeps waiting for its
+            // final. A tap never cancels it or starts another segment while thinking.
+            if self.hasSession { self.end() }
+            else { self.begin(isTap: true, sendOnFinish: false) }
         }
         hotkey.onMeeting = { [weak self] in self?.toggleMeeting() }
         hotkey.onEscape = { [weak self] in
             guard let self, self.hasSession || self.capture.isPrimed else { return }
             self.abort(nil)
-        }
-        hotkey.start()
-        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            self?.handleSettingsShortcut(event) == true ? nil : event
         }
     }
 
@@ -148,10 +158,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func captureChanged(_ recording: Bool) {
         self.recording = recording
-        if recording { activity.start() }
-        else {
-            activity.stop()
-            autoStop = false
+        if !recording {
+            tapRecording = false
             if dictation.isActive {
                 hud.showThinking()
             } else { hud.hide() }
@@ -159,7 +167,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setIcon(recording: recording)
     }
 
-    func begin(autoStop: Bool = false, sendOnFinish: Bool = false) {
+    func begin(isTap: Bool = false, sendOnFinish: Bool = false) {
         guard !meeting.isCapturing else { capture.disarm(); meetingPanel?.show(); return }
         guard !recording else { return }
         do {
@@ -168,8 +176,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             fail("麦克风启动失败：\(error.localizedDescription)")
             return
         }
-        self.autoStop = autoStop
-        hud.show(dictation.text, listening: true, clickToStop: autoStop)
+        tapRecording = isTap
+        hud.show(dictation.text, listening: true, clickToStop: isTap)
     }
 
     private func finishDictation(_ result: DictationSession.Result) {
@@ -184,11 +192,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             hud.hide()
             insertText(result.text, result.sendsReturn)
         }
-    }
-
-    private func checkSilence(_ level: Float) {
-        guard recording, autoStop else { return }
-        if activity.shouldStop(level: level, silence: Hotkey.silence, enabled: Hotkey.silenceStop) { end() }
     }
 
     func end() {

@@ -72,25 +72,3 @@ final class DictationCapture {
         stopHardware()
     }
 }
-
-@MainActor
-final class DictationActivity {
-    private let now: () -> TimeInterval
-    private var listening = false
-    private var heardVoice = false
-    private var lastVoice: TimeInterval = 0
-
-    init(now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) { self.now = now }
-    func start() { listening = true; heardVoice = false; lastVoice = now() }
-    func stop() { listening = false }
-    func speaking() {
-        guard listening else { return }
-        heardVoice = true
-        lastVoice = now()
-    }
-    func shouldStop(level: Float, silence: TimeInterval, enabled: Bool = true) -> Bool {
-        guard listening, enabled else { return false }
-        if level > 0.3 { speaking(); return false }
-        return now() - lastVoice > (heardVoice ? silence : 8)
-    }
-}

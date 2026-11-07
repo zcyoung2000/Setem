@@ -9,7 +9,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     func contentHeight(doubao: Bool = false) -> CGFloat {
         switch self {
         case .channel: doubao ? 430 : 330
-        case .hotkey: 360
+        case .hotkey: 280
         case .meeting: 210
         case .audio: 280
         case .permission: 250
@@ -28,6 +28,7 @@ final class SettingsWindow: NSWindow {
 
     init(meeting: MeetingSession, defaults: UserDefaults = .standard) {
         Channel.migrateLegacySelection(in: defaults)
+        Hotkey.removeRetiredSettings(in: defaults)
         let channel = Channel.current(in: defaults)
         let height = SettingsTab.channel.contentHeight(doubao: channel == .doubao)
         super.init(contentRect: NSRect(x: 0, y: 0, width: 700, height: height),

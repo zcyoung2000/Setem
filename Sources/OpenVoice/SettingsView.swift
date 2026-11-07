@@ -14,8 +14,6 @@ struct SettingsView: View {
     @AppStorage("tapShortcut") private var tapShortcut = Shortcut.defaultRaw
     @AppStorage("meetingShortcut") private var meetingShortcut = Shortcut.meetingDefaultRaw
     @AppStorage("sendHotkey") private var sendHotkey = Hotkey.rightControl.rawValue
-    @AppStorage("silence") private var silence = 1.5
-    @AppStorage("silenceStop") private var silenceStop = true
     @AppStorage("hudStyle") private var hudStyle = HUDStyle.compact.rawValue
     @AppStorage(DictationOutput.removeTrailingPunctuationKey) private var removeTrailingPunctuation = false
     @AppStorage("micUID") private var micUID = ""
@@ -144,15 +142,6 @@ struct SettingsView: View {
             Section {
                 hotkeyPicker("长按快捷键", selection: $hotkey)
                 LabeledContent("点按快捷键") { ShortcutField(raw: $tapShortcut) }
-                Toggle("停顿自动结束", isOn: $silenceStop)
-                    .toggleStyle(.switch)
-                    .disabled(tapShortcut == "off")
-                Picker("静音时长", selection: $silence) {
-                    ForEach([1.0, 1.5, 2.0, 3.0, 5.0], id: \.self) {
-                        Text("\($0, specifier: "%g") 秒").tag($0)
-                    }
-                }
-                .disabled(!silenceStop || tapShortcut == "off")
                 hotkeyPicker("长按并发送", selection: $sendHotkey)
                 if hasHotkeyConflict(Hotkey(rawValue: sendHotkey) ?? .rightControl) {
                     Text("长按并发送快捷键与其他快捷键冲突，请重新绑定。")
@@ -161,7 +150,7 @@ struct SettingsView: View {
             } header: {
                 Text("快捷键")
             } footer: {
-                Text("长按说话，松开结束；点按可开始或结束聆听。长按并发送会在完整定稿上屏后自动回车。")
+                Text("长按说话，松开结束；点按开始，再按同一快捷键或点击浮窗结束收音，定稿后输入。长按并发送会在完整定稿上屏后自动回车。")
                     .font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }

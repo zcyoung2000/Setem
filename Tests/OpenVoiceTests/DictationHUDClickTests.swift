@@ -56,7 +56,7 @@ final class DictationHUDClickTests: XCTestCase {
         XCTAssertTrue(target.makeFirstResponder(input))
         defer { target.orderOut(nil) }
         let originalKey = NSApplication.shared.keyWindow
-        rig.app.begin(autoStop: true)
+        rig.app.begin(isTap: true)
         try await parityEventually { rig.engines.first?.rounds.count == 1 }
         rig.hardware.send(101)
         rig.engines[0].rounds[0].partial("临时稿，缺少尾字")
@@ -90,7 +90,7 @@ final class DictationHUDClickTests: XCTestCase {
         for location in [NSPoint(x: 12, y: 12), NSPoint(x: 80, y: 40)] {
             let rig = Rig()
             defer { rig.close() }
-            rig.app.begin(autoStop: true)
+            rig.app.begin(isTap: true)
             try await parityEventually { rig.engines.first?.rounds.count == 1 }
             try click(rig.hud, at: location)
             XCTAssertFalse(rig.app.dictation.isRecording)
@@ -100,7 +100,7 @@ final class DictationHUDClickTests: XCTestCase {
         }
         let rig = Rig()
         defer { rig.close() }
-        rig.app.begin(autoStop: true)
+        rig.app.begin(isTap: true)
         let content = try XCTUnwrap(rig.hud.windowForDiagnostics.contentView)
         XCTAssertTrue(content.accessibilityPerformPress())
         XCTAssertFalse(content.accessibilityPerformPress())
@@ -121,7 +121,7 @@ final class DictationHUDClickTests: XCTestCase {
         rig.app.end()
         XCTAssertTrue(window.ignoresMouseEvents)
         XCTAssertFalse(content.accessibilityPerformPress())
-        rig.app.begin(autoStop: true)
+        rig.app.begin(isTap: true)
         try await parityEventually { rig.engines.count == 2 && rig.engines[1].rounds.count == 1 }
         // A mouse-up belonging to the previous recording cannot end the resumed run.
         window.sendEvent(try mouse(.leftMouseUp, in: window, at: NSPoint(x: 20, y: 20)))

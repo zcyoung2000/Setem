@@ -48,9 +48,11 @@ enum Hotkey: String, CaseIterable, Identifiable {
         }
         return .rightControl
     }
-    /// 点按模式下静音多久自动结束
-    static var silence: Double { UserDefaults.standard.object(forKey: "silence") as? Double ?? 1.5 }
-    static var silenceStop: Bool { UserDefaults.standard.object(forKey: "silenceStop") as? Bool ?? true }
+    static func removeRetiredSettings(in defaults: UserDefaults) {
+        for key in ["silence", "silenceStop"] where defaults.object(forKey: key) != nil {
+            defaults.removeObject(forKey: key)
+        }
+    }
 
     var title: String {
         switch self {
