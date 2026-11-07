@@ -263,7 +263,6 @@ final class ChannelCompare: ObservableObject {
     @Published var phase = Phase.idle
     @Published var rows: [Row] = []
     @Published var error: String?
-    @Published private(set) var preparing = false
 
     private let recorder = Recorder()
     private let pool = DictationEnginePool()
@@ -305,11 +304,6 @@ final class ChannelCompare: ObservableObject {
         do {
             let source = try recorder.start()
             let captureFailure = recorder.failureSnapshot
-            preparing = recorder.isPreparing
-            recorder.onReady = { [weak self] in
-                guard let self, self.generation == gen else { return }
-                self.preparing = false
-            }
             phase = .recording
             for channel in active { pool.prewarm(channel) }
             let streams = Self.fanout(source, n: active.count)
@@ -324,7 +318,6 @@ final class ChannelCompare: ObservableObject {
     private func stopRecord() {
         guard phase == .recording else { return }
         recorder.stop()
-        preparing = false
         phase = .recognizing
     }
 
@@ -341,7 +334,6 @@ final class ChannelCompare: ObservableObject {
             guard let self, self.generation == gen else { return }
             if self.phase == .recording { self.recorder.stop() }
             HotkeyMonitor.paused = false
-            self.preparing = false
             if let error = captureFailure() { self.error = error }
             self.phase = .idle
             self.work = nil

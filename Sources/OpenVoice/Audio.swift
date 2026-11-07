@@ -103,67 +103,73 @@ protocol RecordingSource: AnyObject {
 /// Each recording owns its source. A setting change never replaces live capture
 /// or lets a callback from a stopped source write into the next recording.
 final class Recorder {
-    static let suppressPlaybackKey = "suppressPlayback"
+    // Preserve existing users' opt-in when replacing echo processing with muting.
+    static let mutePlaybackKey = "suppressPlayback"
     private let defaults: UserDefaults
-    private let makeSource: (Bool, String) -> RecordingSource
+    private let makeSource: (String) -> RecordingSource
+    private let silencer: PlaybackSilencer
     private var source: RecordingSource?
-    private static let hardwareQueue: OperationQueue = {
-        let queue = OperationQueue()
-        queue.name = "openvoice.recorder.hardware"
-        queue.maxConcurrentOperationCount = 1
-        queue.qualityOfService = .userInitiated
-        return queue
-    }()
+    private var muteLease: PlaybackMuteLease?
+    private final class Failure {
+        private let lock = NSLock()
+        private var error: String?
+        func set(_ error: Error) { lock.lock(); self.error = error.localizedDescription; lock.unlock() }
+        var message: String? { lock.lock(); defer { lock.unlock() }; return error }
+    }
+    private var failure = Failure()
     var onLevel: ((Float) -> Void)?
-    var onReady: (() -> Void)?
-    var isPreparing: Bool { (source as? DeferredRecordingSource)?.preparation.isPreparing ?? false }
     var failureSnapshot: () -> String? {
-        let state = (source as? DeferredRecordingSource)?.preparation
-        return { state?.failure }
+        let failure = failure
+        return { failure.message }
     }
 
-    init(defaults: UserDefaults = .standard,
-         makeSource: @escaping (Bool, String) -> RecordingSource = { suppress, uid in
-             if suppress { return VoiceProcessingSource(microphoneUID: uid) }
-             return AudioQueueSource(microphoneUID: uid)
-         }) {
+    init(defaults: UserDefaults = .standard, silencer: PlaybackSilencer = .shared,
+         makeSource: @escaping (String) -> RecordingSource = { AudioQueueSource(microphoneUID: $0) }) {
         self.defaults = defaults
+        self.silencer = silencer
         self.makeSource = makeSource
     }
 
     func start() throws -> AsyncStream<[Int16]> {
         guard source == nil else { throw ASRError("录音已开始") }
-        let suppress = defaults.bool(forKey: Self.suppressPlaybackKey)
-        let raw = makeSource(suppress, defaults.string(forKey: "micUID") ?? "")
-        let input: RecordingSource
-        if suppress || Self.hardwareQueue.operationCount > 0 {
-            let deferred = DeferredRecordingSource(raw, queue: Self.hardwareQueue)
-            deferred.onReady = { [weak self, weak deferred] in
-                DispatchQueue.main.async { [weak self, weak deferred] in
-                    guard let self, let deferred, self.source === deferred else { return }
-                    self.onReady?()
+        let input = makeSource(defaults.string(forKey: "micUID") ?? "")
+        input.onLevel = onLevel
+        let failure = Failure()
+        self.failure = failure
+        var lease: PlaybackMuteLease?
+        do {
+            if defaults.bool(forKey: Self.mutePlaybackKey) {
+                lease = try silencer.acquire { [weak self, weak input] error in
+                    failure.set(error)
+                    DispatchQueue.main.async {
+                        guard let self, let input, self.source === input else { return }
+                        // Finish only this capture's stream. Session completion keeps
+                        // its recognized tail and cannot stop a subsequent recording.
+                        self.stop()
+                    }
                 }
             }
-            input = deferred
-        } else { input = raw }
-        input.onLevel = onLevel
-        do {
             let stream = try input.start()
             source = input
+            muteLease = lease
             return stream
         } catch {
             input.stop()
+            lease?.finish()
             throw error
         }
     }
 
     func stop() {
-        let input = source
+        let input = source, lease = muteLease
         source = nil
+        muteLease = nil
         input?.stop()
+        // Audio is restored at the capture boundary, never after ASR finalization.
+        lease?.finish()
     }
 
-    deinit { source?.stop() }
+    deinit { source?.stop(); muteLease?.finish() }
 
     /// RMS → dBFS，-50dB 以下视为静音，-10dB 封顶
     static func level(_ frame: [Int16]) -> Float {
@@ -174,7 +180,7 @@ final class Recorder {
     }
 }
 
-/// The unchanged low-cost path when echo suppression is off.
+/// Low-cost capture for both normal recording and recording with output muted.
 final class AudioQueueSource: RecordingSource {
     private let callbackQueue = DispatchQueue(label: "openvoice.recorder")
     private let microphoneUID: String

@@ -40,10 +40,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self, self.recording, self.tapRecording else { return }
             self.end()
         }
-        recorder.onReady = { [weak self] in
-            guard let self, self.recording else { return }
-            self.hud.show(self.dictation.text, listening: true, clickToStop: self.tapRecording)
-        }
         configureHotkeys()
     }
 
@@ -139,6 +135,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return .terminateLater
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        recorder.stop()
+        PlaybackSilencer.shared.restoreAll()
+    }
+
     private func primeRecording() {
         guard !recording, !HotkeyMonitor.paused else { return }
         try? capture.arm()
@@ -165,7 +166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         tapRecording = isTap
-        hud.show(recorder.isPreparing ? "正在准备麦克风…" : dictation.text, listening: true, clickToStop: isTap)
+        hud.show(dictation.text, listening: true, clickToStop: isTap)
     }
 
     private func finishDictation(_ result: DictationSession.Result) {

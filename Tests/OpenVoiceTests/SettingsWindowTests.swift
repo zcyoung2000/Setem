@@ -5,21 +5,21 @@ import XCTest
 
 @MainActor
 final class SettingsWindowTests: XCTestCase {
-    func testPlaybackSuppressionSwitchPersistsAndCanBeDisabledAfterReopening() async throws {
+    func testPlaybackMuteSwitchPersistsAndCanBeDisabledAfterReopening() async throws {
         _ = NSApplication.shared
         let suite = "OpenVoice-EchoSettings-" + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        XCTAssertFalse(defaults.bool(forKey: Recorder.suppressPlaybackKey))
+        XCTAssertFalse(defaults.bool(forKey: Recorder.mutePlaybackKey))
         let window = SettingsWindow(defaults: defaults)
         window.makeKeyAndOrderFront(nil)
         defer { window.close() }
         try await settle(window)
         try press("声音与界面", in: window)
         try await settle(window)
-        try press("抑制电脑播放声音", in: window)
+        try press("录音时静音电脑声音", in: window)
         try await settle(window)
-        XCTAssertTrue(defaults.bool(forKey: Recorder.suppressPlaybackKey))
+        XCTAssertTrue(defaults.bool(forKey: Recorder.mutePlaybackKey))
         window.close()
         let reopened = SettingsWindow(defaults: defaults)
         defer { reopened.close() }
@@ -27,10 +27,10 @@ final class SettingsWindowTests: XCTestCase {
         try await settle(reopened)
         try press("声音与界面", in: reopened)
         try await settle(reopened)
-        XCTAssertTrue(defaults.bool(forKey: Recorder.suppressPlaybackKey))
-        try press("抑制电脑播放声音", in: reopened)
+        XCTAssertTrue(defaults.bool(forKey: Recorder.mutePlaybackKey))
+        try press("录音时静音电脑声音", in: reopened)
         try await settle(reopened)
-        XCTAssertFalse(defaults.bool(forKey: Recorder.suppressPlaybackKey))
+        XCTAssertFalse(defaults.bool(forKey: Recorder.mutePlaybackKey))
     }
 
     func testHotkeyPageRemovesSilenceControlsAndRetiredPreferencesOnReopen() async throws {
