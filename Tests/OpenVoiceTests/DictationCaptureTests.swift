@@ -4,6 +4,29 @@ import XCTest
 
 @MainActor
 final class DictationCaptureTests: XCTestCase {
+    func testSourceEndingBeforeTakePreservesPrerollAndFinishesExactTranscript() async throws {
+        let hardware = ParityCapture()
+        defer { hardware.close() }
+        let capture = DictationCapture(start: hardware.start, stop: hardware.stop)
+        try capture.arm()
+        hardware.send(101)
+        hardware.send(102)
+        try await parityEventually { hardware.sources[0].requests == 3 }
+        hardware.sources[0].finish()
+        // Let the source finish while the hotkey is still deciding tap/hold.
+        await Task.yield()
+        try await Task.sleep(for: .milliseconds(10))
+        let stream = try capture.take()
+        var text = "", finished = false
+        let reader = Task { @MainActor in
+            for await frame in stream { text += frame[0] == 101 ? "开头" : "和结尾。" }
+            finished = true
+        }
+        defer { reader.cancel(); capture.stop() }
+        try await parityEventually { finished }
+        XCTAssertEqual(text, "开头和结尾。")
+    }
+
     func testPrerollTransfersBoundedFramesAndTail() async throws {
         let hardware = ParityCapture()
         defer { hardware.close() }

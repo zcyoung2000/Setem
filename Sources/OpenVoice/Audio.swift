@@ -1,6 +1,7 @@
 import AVFoundation
 import AudioToolbox
 import CoreAudio
+import OSLog
 
 /// CoreAudio 输入设备；UID 存设置里，拔掉后自动回退系统默认
 struct Microphone: Identifiable, Hashable {
@@ -96,6 +97,7 @@ final class FrameConverter {
 
 protocol RecordingSource: AnyObject {
     var onLevel: ((Float) -> Void)? { get set }
+    var onFailure: ((Error) -> Void)? { get set }
     func start() throws -> AsyncStream<[Int16]>
     func stop()
 }
@@ -136,18 +138,18 @@ final class Recorder {
         input.onLevel = onLevel
         let failure = Failure()
         self.failure = failure
+        let reportFailure: (Error) -> Void = { [weak self, weak input] error in
+            failure.set(error)
+            DispatchQueue.main.async {
+                guard let self, let input, self.source === input else { return }
+                self.stop()
+            }
+        }
+        input.onFailure = reportFailure
         var lease: PlaybackMuteLease?
         do {
             if defaults.bool(forKey: Self.mutePlaybackKey) {
-                lease = try silencer.acquire { [weak self, weak input] error in
-                    failure.set(error)
-                    DispatchQueue.main.async {
-                        guard let self, let input, self.source === input else { return }
-                        // Finish only this capture's stream. Session completion keeps
-                        // its recognized tail and cannot stop a subsequent recording.
-                        self.stop()
-                    }
-                }
+                lease = try silencer.acquire(onFailure: reportFailure)
             }
             let stream = try input.start()
             source = input
@@ -182,69 +184,115 @@ final class Recorder {
 
 /// Low-cost capture for both normal recording and recording with output muted.
 final class AudioQueueSource: RecordingSource {
+    private static let log = Logger(subsystem: "do.j3.openvoice", category: "CaptureTiming")
     private let callbackQueue = DispatchQueue(label: "openvoice.recorder")
     private let microphoneUID: String
-    private var queue: AudioQueueRef?
+    private let input: AudioQueueInput
+    private let drainTimeout: TimeInterval
+    private var drainTask: Task<Void, Never>?
+    private var active = false
+    private var stopping = false
+    private var began: TimeInterval = 0
+    private var sampleCount = 0
     private var pending = AudioFrameBuffer()
     private var continuation: AsyncStream<[Int16]>.Continuation?
     /// 每 20ms 帧的音量（0...1），在采集队列回调
     var onLevel: ((Float) -> Void)?
+    var onFailure: ((Error) -> Void)?
 
-    init(microphoneUID: String) { self.microphoneUID = microphoneUID }
+    init(microphoneUID: String, input: AudioQueueInput = SystemAudioQueueInput(), drainTimeout: TimeInterval = 0.75) {
+        self.microphoneUID = microphoneUID
+        self.input = input
+        self.drainTimeout = drainTimeout
+    }
 
     func start() throws -> AsyncStream<[Int16]> {
         let (stream, cont) = AsyncStream<[Int16]>.makeStream()
-        var format = AudioStreamBasicDescription(
-            mSampleRate: 16000, mFormatID: kAudioFormatLinearPCM,
-            mFormatFlags: kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked,
-            mBytesPerPacket: 2, mFramesPerPacket: 1, mBytesPerFrame: 2, mChannelsPerFrame: 1,
-            mBitsPerChannel: 16, mReserved: 0)
-        var q: AudioQueueRef?
-        let status = AudioQueueNewInputWithDispatchQueue(&q, &format, 0, callbackQueue) { [weak self] q, buffer, _, _, _ in
-            guard let self, let continuation = self.continuation else { return }
-            let count = Int(buffer.pointee.mAudioDataByteSize) / 2
-            let samples = UnsafeBufferPointer(start: buffer.pointee.mAudioData.assumingMemoryBound(to: Int16.self), count: count)
-            for frame in self.pending.push(samples) {
-                continuation.yield(frame)
-                self.onLevel?(Recorder.level(frame))
-            }
-            AudioQueueEnqueueBuffer(q, buffer, 0, nil)
-        }
-        guard status == noErr, let q else { throw ASRError("麦克风打开失败 \(status)") }
-        queue = q
-        let uid = microphoneUID
-        if !uid.isEmpty, Microphone.all().contains(where: { $0.id == uid }) {
-            var cf = uid as CFString
-            AudioQueueSetProperty(q, kAudioQueueProperty_CurrentDevice, &cf, UInt32(MemoryLayout<CFString>.size))
-        }
-        for _ in 0..<4 {
-            var buffer: AudioQueueBufferRef?
-            AudioQueueAllocateBuffer(q, UInt32(FrameConverter.frame * 2 * 2), &buffer)
-            if let buffer { AudioQueueEnqueueBuffer(q, buffer, 0, nil) }
-        }
+        guard !active else { throw ASRError("录音已开始") }
+        began = ProcessInfo.processInfo.systemUptime
         callbackQueue.sync {
             pending = AudioFrameBuffer()
             continuation = cont
+            sampleCount = 0
         }
-        let started = AudioQueueStart(q, nil)
-        guard started == noErr else {
-            throw ASRError("麦克风启动失败 \(started)")
+        do {
+            try input.open(microphoneUID: microphoneUID, callbackQueue: callbackQueue, receive: { [weak self] samples in
+                guard let self, let continuation = self.continuation, !samples.isEmpty else { return }
+                if self.sampleCount == 0 {
+                    Self.log.notice("first-audio ms=\(Int((ProcessInfo.processInfo.systemUptime - self.began) * 1000))")
+                }
+                self.sampleCount += samples.count
+                for frame in self.pending.push(samples) {
+                    continuation.yield(frame)
+                    self.onLevel?(Recorder.level(frame))
+                }
+            }, failed: { [weak self] error in
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.active else { return }
+                    self.onFailure?(error)
+                    self.stop()
+                }
+            })
+            try input.start()
+            active = true
+            stopping = false
+        } catch {
+            input.dispose()
+            callbackQueue.sync { continuation?.finish(); continuation = nil }
+            throw error
         }
         return stream
     }
 
     func stop() {
-        guard let q = queue else { return }
-        queue = nil
-        AudioQueueStop(q, true)
+        guard active, !stopping else { return }
+        stopping = true
+        // The old source may still deliver audio while the next HUD is live.
+        callbackQueue.sync { onLevel = nil }
+        // Keep the original immediate stop for built-in, wired and unknown inputs.
+        // Merely using AirPods for playback must not add a capture delay.
+        let transport = input.transportType
+        guard transport == kAudioDeviceTransportTypeBluetooth || transport == kAudioDeviceTransportTypeBluetoothLE else {
+            finish()
+            return
+        }
+        do { try input.stop(immediately: false) }
+        catch { onFailure?(error); finish(); return }
+        // Stop accepting new buffers, but keep this source alive while Core Audio
+        // fills its queued buffers. Bluetooth audio can arrive after key-up.
+        // A new Recorder capture gets a different source and frame buffer.
+        drainTask = Task { @MainActor [self] in
+            let deadline = ProcessInfo.processInfo.systemUptime + drainTimeout
+            do {
+                while try input.isRunning() {
+                    guard ProcessInfo.processInfo.systemUptime < deadline else {
+                        throw ASRError("麦克风尾音读取超时，请检查蓝牙连接后重试")
+                    }
+                    try await Task.sleep(for: .milliseconds(10))
+                }
+            } catch { onFailure?(error) }
+            finish()
+        }
+    }
+
+    private func finish() {
+        // All callbacks must finish before the last sub-frame is padded or the
+        // stream ends. Wired inputs stop immediately; Bluetooth reaches this after
+        // draining, or as a bounded failure fallback.
+        do { try input.stop(immediately: true) } catch { onFailure?(error) }
         callbackQueue.sync {
             if let tail = pending.flush() { continuation?.yield(tail) }
             pending = AudioFrameBuffer()
             continuation?.finish()
             continuation = nil
+            Self.log.notice("stopped samples=\(self.sampleCount)")
         }
-        AudioQueueDispose(q, true)
+        input.dispose()
+        active = false
+        drainTask = nil
     }
+
+    deinit { input.dispose() }
 }
 
 /// 调试用：读音频文件，按实时节奏喂帧

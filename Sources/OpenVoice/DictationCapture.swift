@@ -9,6 +9,7 @@ final class DictationCapture {
         var output: AsyncStream<[Int16]>.Continuation?
         var forwarding = false
         var discarded = false
+        var ended = false
         var pump: Task<Void, Never>?
     }
     private let startHardware: () throws -> AsyncStream<[Int16]>
@@ -40,7 +41,8 @@ final class DictationCapture {
             }
             run.output?.finish()
             run.output = nil
-            run.frames = FIFOBuffer()
+            run.ended = true
+            if run.discarded || run.forwarding { run.frames = FIFOBuffer() }
             run.pump = nil
         }
     }
@@ -52,6 +54,7 @@ final class DictationCapture {
         run.output = output
         run.forwarding = true
         while let frame = run.frames.popFirst() { output.yield(frame) }
+        if run.ended { output.finish(); run.output = nil }
         return stream
     }
 
