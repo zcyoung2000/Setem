@@ -1,8 +1,8 @@
-<p align="center"><img src="docs/icon.png" width="128" alt="OpenVoice"></p>
+<p align="center"><img src="docs/icon.png" width="128" alt="Setem"></p>
 
-<h1 align="center">OpenVoice</h1>
+<h1 align="center">Setem</h1>
 
-<p align="center">macOS 菜单栏语音输入：按住或点按快捷键说话，在浮窗中预览，定稿后一次性输入光标处。</p>
+<p align="center">Setem（原 OpenVoice）是 macOS 菜单栏语音输入：按住或点按快捷键说话，在浮窗中预览，定稿后一次性输入光标处。</p>
 
 ## 功能
 
@@ -17,21 +17,33 @@
 - **录音时静音电脑声音**：在「声音与界面」开启后，收音时自动静音外放，系统识别的耳机保持播放；停止收音立即恢复原状态，默认关闭，下次录音生效，无需准备回声消除引擎
 - **动态浮窗**：新增文字轻柔淡入，换行时平滑增高，文字保持正常排版；收音时显示文字预览和全宽音频柱，松键后保留预览，音频柱收拢、淡化为 `thinking` 和全宽渐变光带；浮窗从小点张开，完整定稿、润色完成后缩回小点消失，支持系统「减少动态效果」
 
+## 常用工具对比
+
+下表为同类型桌面语音输入工具的技术特征对比。Setem 采用 Swift 原生实现，使用 MIT 许可证并免费提供。
+
+| 工具 | 框架 | 安装体积减少 | 内存减少 | 许可证 | 价格 |
+|---|---|---:|---:|---|---|
+| **Setem** | Swift 原生 | 基准 | 基准 | MIT | 免费 |
+| **OpenLess** | Rust + Tauri | **-92%** | **-44%** | AGPL-3.0 | 核心/BYOK 免费；云服务收费 |
+| **Handy** | Rust + Tauri | **-81%** | **-46%** | MIT | 免费 |
+| **VoiceInk** | Swift 原生 | **-95%** | **-58%** | GPL v3 | 自编译免费；预编译买断 |
+| **Typeless** | Electron | **-99%** | **-92%** | 闭源 | 订阅制 |
+
 ## 安装
 
-从 [Releases](../../releases) 下载 `OpenVoice-x.y.z.dmg`，打开后将 OpenVoice 拖到「应用程序」。
+从 [Releases](../../releases) 下载 `Setem-x.y.z.dmg`，打开后将 Setem 拖到「应用程序」。
 
 发布包为 ad-hoc 签名、未经 Apple 公证，首次运行前需解除隔离：
 
 ```bash
-xattr -dr com.apple.quarantine /Applications/OpenVoice.app
+xattr -dr com.apple.quarantine /Applications/Setem.app
 ```
 
 要求 macOS 15+。通用包，Apple 芯片与 Intel 均可直接运行，无需安装任何依赖。
 
 ## 使用
 
-1. 启动后出现在菜单栏（麦克风图标）。图标被刘海或菜单栏管理工具挡住时，再次打开 OpenVoice.app 即可弹出设置
+1. 启动后出现在菜单栏（麦克风图标）。图标被刘海或菜单栏管理工具挡住时，再次打开 Setem.app 即可弹出设置
 2. 按提示授予 **辅助功能**（监听快捷键、上屏）和 **麦克风** 权限
 3. 在设置中选择渠道、快捷键、麦克风，然后在任意输入框中说话
 
@@ -45,21 +57,21 @@ xattr -dr com.apple.quarantine /Applications/OpenVoice.app
 | 长按并发送 | 右 ⌃ |
 | 浮窗大小 | 紧凑（可切换标准，提供更宽预览与稍大字号） |
 | 去除末尾标点 | 关闭；开启后，输入前仅移除末尾的一个标点，保留句中标点 |
-**本地模型**：首次选择「本地模型」渠道时会先询问是否下载引擎库（约 8MB，来自上游 [offline-libs](https://github.com/J3n5en/voicekey/releases/tag/offline-libs) Release）和模型（约 177MB，来自字节 CDN），保存在 `~/Library/Application Support/OpenVoice/offline/`。之后断网也能用；识别时会在后台进程中占用约 1GB 内存，空闲 5 分钟后自动释放，也可随时在设置中删除。
+**本地模型**：首次选择「本地模型」渠道时会先询问是否下载引擎库（约 8MB，来自上游 [offline-libs](https://github.com/J3n5en/voicekey/releases/tag/offline-libs) Release）和模型（约 177MB，来自字节 CDN），保存在 `~/Library/Application Support/OpenVoice/offline/`。之后断网也能用；识别时会在后台进程中占用约 1GB 内存，空闲 5 分钟后自动释放，也可随时在设置中删除。当前发布包只重命名为 Setem，为兼容原 OpenVoice 的配置和数据，本地存储路径暂不迁移。
 
-单个修饰键可同时作为长按键和点按键：快速点一下为点按，按住超过 0.3 秒为长按。设为组合键的点按快捷键会被 OpenVoice 拦截，不再传给前台应用。
+单个修饰键可同时作为长按键和点按键：快速点一下为点按，按住超过 0.3 秒为长按。设为组合键的点按快捷键会被 Setem 拦截，不再传给前台应用。
 长按并发送与长按快捷键一样通过选择器选择；如果与长按或点按快捷键冲突，会自动换到可用按键。
 
 ## 从源码构建
 
 ```bash
-./build.sh            # 产物在 build/OpenVoice.app（arm64 + x86_64 通用包）
+./build.sh            # 产物在 build/OpenVoice.app（arm64 + x86_64 通用包；发布包重命名为 Setem.app）
 ```
 
 - 只需 Xcode 命令行工具；Opus 由 `Scripts/opus.sh` 从官方源码编译为通用静态库，首次构建自动下载并校验
 - 本地自动生成并复用 `OpenVoice Self-Signed` 固定签名证书；可用 `SIGN_IDENTITY` 指定证书，`-` 为 ad-hoc
 - `VERSION` / `BUILD` 环境变量设置版本号
-- 打包 DMG：`./Scripts/dmg.sh build/OpenVoice.dmg`（窗口布局与背景见 `Scripts/dmg/`）
+- 打包 DMG：`./Scripts/dmg.sh build/Setem.dmg`（窗口布局与背景见 `Scripts/dmg/`）
 - 调试识别链路：`build/OpenVoice.app/Contents/MacOS/OpenVoice --test doubao|wetype file.wav`
 - 渲染听写预览（不收音、不上屏）：`build/OpenVoice.app/Contents/MacOS/OpenVoice --preview-hud --hud-text "明天下午四点开会，请带上完整测试报告。" --thinking --snapshot /tmp/openvoice-preview.png`
 - 语音与音频回归基线（含快捷键预录、定稿确认、续录、连接复用）：`./Scripts/test.sh`；见 [语音输入回归基线](docs/dictation-baseline.md) 与 [上游流程对齐契约](docs/dictation-parity.md)
