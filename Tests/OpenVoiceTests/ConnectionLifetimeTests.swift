@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import CryptoKit
 import XCTest
 @testable import OpenVoice
 
@@ -13,6 +14,26 @@ private final class SocketTestServer: @unchecked Sendable {
     private var ready = false
     var isReady: Bool { lock.withLock { ready } }
     var hasConnection: Bool { lock.withLock { !connections.isEmpty } }
+
+    func upgradeToWebSocket() async throws {
+        guard let connection = lock.withLock({ connections.first }) else { throw ASRError("回环连接尚未建立") }
+        var request = Data()
+        while !request.suffix(4).elementsEqual(Data("\r\n\r\n".utf8)) {
+            let bytes: Data = try await withCheckedThrowingContinuation { continuation in
+                connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, complete, error in
+                    if let error { continuation.resume(throwing: error) }
+                    else if let data, !data.isEmpty { continuation.resume(returning: data) }
+                    else { continuation.resume(throwing: ASRError(complete ? "回环连接关闭" : "空握手")) }
+                }
+            }
+            request.append(bytes)
+        }
+        guard let line = String(decoding: request, as: UTF8.self).components(separatedBy: "\r\n")
+            .first(where: { $0.lowercased().hasPrefix("sec-websocket-key:") }) else { throw ASRError("缺少握手 key") }
+        let key = line.dropFirst("sec-websocket-key:".count).trimmingCharacters(in: .whitespaces)
+        let digest = Data(Insecure.SHA1.hash(data: Data((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").utf8))).base64EncodedString()
+        try await send(Data("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: \(digest)\r\n\r\n".utf8))
+    }
 
     func send(_ data: Data) async throws {
         guard let connection = lock.withLock({ connections.first }) else { throw ASRError("回环连接尚未建立") }
@@ -64,6 +85,51 @@ private final class SocketStateProbe: @unchecked Sendable {
 /// with no public endpoint, speech content, microphone or Accessibility permission.
 @MainActor
 final class ConnectionLifetimeTests: XCTestCase {
+    func testCancelledWebSocketReadClosesConnectionWithoutWaitingForReply() async throws {
+        let server = try SocketTestServer()
+        defer { server.close() }
+        try await eventually { server.isReady }
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.invalidateAndCancel() }
+        let port = try XCTUnwrap(server.listener.port)
+        let socket = OpenVoice.WebSocket(request: URLRequest(url: URL(string: "ws://127.0.0.1:\(port.rawValue)/")!), session: session)
+        var finished = false
+        let read = Task { () throws -> Data in
+            defer { finished = true }
+            return try await socket.receive(timeout: 15)
+        }
+        defer { read.cancel(); socket.close() }
+        try await eventually { server.hasConnection }
+        try await server.upgradeToWebSocket()
+        read.cancel()
+        try await eventually { finished }
+        XCTAssertFalse(socket.alive)
+        if case .success = await read.result { XCTFail("Cancelled read must fail") }
+    }
+
+    func testSuccessfulWebSocketReadsKeepTheConnectionReusable() async throws {
+        let server = try SocketTestServer()
+        defer { server.close() }
+        try await eventually { server.isReady }
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.invalidateAndCancel() }
+        let port = try XCTUnwrap(server.listener.port)
+        let socket = OpenVoice.WebSocket(request: URLRequest(url: URL(string: "ws://127.0.0.1:\(port.rawValue)/")!), session: session)
+        defer { socket.close() }
+        let first = Task { try await socket.receive(timeout: 5) }
+        try await eventually { server.hasConnection }
+        try await server.upgradeToWebSocket()
+        try await server.send(Data([0x82, 3]) + Data("one".utf8))
+        let one = try await first.value
+        XCTAssertEqual(one, Data("one".utf8))
+        XCTAssertTrue(socket.alive)
+        let second = Task { try await socket.receive(timeout: 5) }
+        try await server.send(Data([0x82, 3]) + Data("two".utf8))
+        let two = try await second.value
+        XCTAssertEqual(two, Data("two".utf8))
+        XCTAssertTrue(socket.alive, "Cancelling the losing timeout task must not close a successful read")
+    }
+
     private func eventually(_ predicate: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
         for _ in 0..<1000 {
             if predicate() { return }

@@ -12,6 +12,10 @@ struct DictationTranscript {
     var finished: Bool { parts.allSatisfy(\.done) }
 
     mutating func begin() -> Int { parts.append(Part()); return parts.count - 1 }
+    func hasIdenticalPartial(_ id: Int, text: String) -> Bool {
+        guard parts.indices.contains(id), !parts[id].done else { return false }
+        return parts[id].text.utf16.elementsEqual(text.utf16)
+    }
     mutating func update(_ id: Int, text: String) -> Bool? {
         guard parts.indices.contains(id), !parts[id].done else { return nil }
         let changed = parts[id].text != text

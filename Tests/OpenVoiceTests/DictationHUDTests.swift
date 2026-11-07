@@ -5,6 +5,50 @@ import XCTest
 /// Requirements and rendered UI outcomes: docs/dictation-hud-regression.md.
 @MainActor
 final class DictationHUDTests: XCTestCase {
+    func testPointSizedSurfaceNeverAssignsInfiniteChildFrames() async throws {
+        _ = NSApplication.shared
+        let hud = HUD(reduceMotion: { true })
+        defer { hud.hide() }
+        hud.show("缩放过程仍保留完整文字。", listening: true)
+        let surface = try XCTUnwrap(nativeView("dictation-surface", in: hud))
+        let original = surface.bounds
+        defer { surface.bounds = original; surface.needsLayout = true }
+        for size: CGFloat in [8, 16, 24, 40] {
+            surface.bounds = NSRect(x: 0, y: 0, width: size, height: size)
+            surface.needsLayout = true
+            surface.layoutSubtreeIfNeeded()
+            for child in surface.subviews {
+                XCTAssertTrue(child.frame.origin.x.isFinite && child.frame.origin.y.isFinite,
+                    "\(type(of: child)) has invalid frame \(child.frame) at \(size)pt")
+                XCTAssertTrue(child.frame.width.isFinite && child.frame.height.isFinite)
+                XCTAssertGreaterThanOrEqual(child.frame.width, 0)
+                XCTAssertGreaterThanOrEqual(child.frame.height, 0)
+            }
+        }
+    }
+
+    func testIdenticalPreviewDoesNotEditNativeTextStorageAgain() async throws {
+        _ = NSApplication.shared
+        let hud = HUD(reduceMotion: { true })
+        defer { hud.hide() }
+        let value = "相同回包无需重新排版，完整尾字🧪。"
+        hud.show(value, listening: true)
+        let text = try XCTUnwrap(nativeView("dictation-preview-text", in: hud) as? NSTextView)
+        let storage = try XCTUnwrap(text.textStorage)
+        let frame = hud.windowForDiagnostics.frame
+        var edits = 0
+        let observer = NotificationCenter.default.addObserver(forName: NSTextStorage.didProcessEditingNotification,
+            object: storage, queue: nil) { _ in edits += 1 }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        for _ in 0..<20 { hud.update(value) }
+        XCTAssertEqual(edits, 0)
+        XCTAssertEqual(text.string, value)
+        XCTAssertEqual(hud.windowForDiagnostics.frame, frame)
+        hud.showThinking()
+        XCTAssertEqual(text.string, value)
+        try await assertThinking(hud)
+    }
+
     private struct RenderedHUD {
         let text: [String]
         let coloredPixels: Int

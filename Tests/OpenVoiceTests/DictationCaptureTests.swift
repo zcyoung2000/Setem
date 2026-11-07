@@ -90,7 +90,12 @@ final class DictationCaptureTests: XCTestCase {
         now = 8.9
         XCTAssertFalse(activity.shouldStop(level: 0.01, silence: 1.5))
         engines[0].rounds[0].partial("小声说的尾字")
-        try await parityEventually { updates == 2 }
+        // Drain the same main-queue FIFO used by partial callbacks. Identical
+        // text now intentionally skips UI updates, but must still not count as speech.
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+            DispatchQueue.main.async { done.resume() }
+        }
+        XCTAssertEqual(updates, 1)
         now = 9.5
         XCTAssertTrue(activity.shouldStop(level: 0.01, silence: 1.5))
         model.end()

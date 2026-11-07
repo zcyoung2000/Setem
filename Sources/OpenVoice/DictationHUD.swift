@@ -278,7 +278,10 @@ private final class DictationHUDSurface: NSView {
         let audioHeight = footer.height + (6 - footer.height) * thinkingMix
         audio.frame = NSRect(x: footer.minX, y: footer.minY + (footer.height - audioHeight), width: footer.width, height: audioHeight)
         thinking.frame = footer
-        message.frame = bounds.insetBy(dx: inset, dy: 12)
+        // insetBy produces a null rect with infinite origins while the panel is
+        // smaller than its padding during the point entrance/exit.
+        message.frame = NSRect(x: inset, y: 12, width: max(0, bounds.width - inset * 2),
+                               height: max(0, bounds.height - 24))
         if !preview.isHidden {
             let availableHeight = max(0, footer.minY - 22)
             preview.frame = NSRect(x: (bounds.width - previewSize.width) / 2,
@@ -329,7 +332,8 @@ private final class DictationHUDContainer: NSView {
         surface.frame = bounds
         surface.bounds = NSRect(origin: .zero, size: renderedSize ?? bounds.size)
         surface.needsLayout = true
-        surface.layoutSubtreeIfNeeded()
+        // Let the current AppKit layout pass visit the child instead of forcing
+        // a nested pass while its ancestor is still being laid out.
     }
 }
 
@@ -349,6 +353,9 @@ final class HUD {
     private var hideWork: DispatchWorkItem?
     private var visibilityGeneration = 0
     private var observer: Any?
+    private var settingsLayoutPending = false
+    private var lastLayoutStyle: HUDStyle?
+    private var lastLayoutReducedMotion: Bool?
     var isVisible: Bool { panel.isVisible }
     var windowForDiagnostics: NSWindow { panel }
 
@@ -366,8 +373,18 @@ final class HUD {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.contentView = container
         observer = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
-            guard let self, self.isVisible, self.phase != .hidden else { return }
-            self.layout()
+            guard let self, self.isVisible, self.phase != .hidden, !self.settingsLayoutPending else { return }
+            self.settingsLayoutPending = true
+            // Defaults can be published during a SwiftUI view update. Defer and
+            // coalesce the native layout instead of entering it synchronously.
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.settingsLayoutPending = false
+                guard self.isVisible, self.phase != .hidden else { return }
+                let style = HUDStyle(rawValue: self.defaults.string(forKey: "hudStyle") ?? "") ?? .compact
+                guard style != self.lastLayoutStyle || self.reduceMotion() != self.lastLayoutReducedMotion else { return }
+                self.layout()
+            }
         }
     }
 
@@ -405,6 +422,7 @@ final class HUD {
 
     func update(_ text: String) {
         guard isVisible, phase == .listening || phase == .thinking else { return }
+        guard !surface.text.utf16.elementsEqual(text.utf16) else { return }
         layout(text: text)
     }
 
@@ -484,7 +502,10 @@ final class HUD {
             ?? NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
         guard let bounds = screen?.visibleFrame else { return }
         let style = HUDStyle(rawValue: defaults.string(forKey: "hudStyle") ?? "") ?? .compact
-        surface.configure(text ?? surface.text, phase: phase, style: style, screenWidth: bounds.width, reducedMotion: reduceMotion())
+        let reducedMotion = reduceMotion()
+        lastLayoutStyle = style
+        lastLayoutReducedMotion = reducedMotion
+        surface.configure(text ?? surface.text, phase: phase, style: style, screenWidth: bounds.width, reducedMotion: reducedMotion)
         let size = surface.targetSize
         let target = NSRect(x: bounds.midX - size.width / 2, y: bounds.minY + 80, width: size.width, height: size.height)
         guard target != targetFrame || opening else { layoutContainer(); return }
@@ -494,7 +515,7 @@ final class HUD {
         let generation = resizeGeneration
         resizeTimer?.invalidate()
         resizeTimer = nil
-        guard !reduceMotion() else {
+        guard !reducedMotion else {
             container.renderedSize = nil
             panel.setFrame(target, display: true)
             layoutContainer()

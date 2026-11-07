@@ -1,28 +1,67 @@
 import CommonCrypto
 import CryptoKit
 import Foundation
+import OSLog
+
+protocol WeTypeConnection: AnyObject {
+    var alive: Bool { get }
+    func voice(_ packet: WeTypeClient.VoicePacket, timeout: TimeInterval) async throws -> (text: String, polished: String)
+    func close()
+}
 
 /// 微信输入法云端识别（伪装 Mac 客户端）：protobuf 包 HTTP over WSS + snappy + AES-256-ECB + secp128r1 ECDH
 final class WeTypeEngine: ASREngine {
+    private static let log = Logger(subsystem: "do.j3.openvoice", category: "WeTypeTiming")
     private static let opusHeader = Data("#!OPUS_RAW_V1".utf8) + Data([2, 1, 0])
     private static let packetsPerRequest = 6
-    private var client: WeTypeClient?
+    private var client: WeTypeConnection?
+    private let makeClient: () async throws -> WeTypeConnection
+    private let now: () -> TimeInterval
+    private let idleReuseLimit: TimeInterval
+    private let firstReplyTimeout: TimeInterval
+    private var lastReplyAt: TimeInterval?
+    private let diagnosticID = UUID().uuidString
+
+    init(idleReuseLimit: TimeInterval = 60, firstReplyTimeout: TimeInterval = 3,
+         now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+         makeClient: @escaping () async throws -> WeTypeConnection = { try await WeTypeClient.open() }) {
+        self.idleReuseLimit = idleReuseLimit
+        self.firstReplyTimeout = firstReplyTimeout
+        self.now = now
+        self.makeClient = makeClient
+    }
 
     deinit { client?.close() }
 
-    /// 握手约 400ms，连接留着给下次用；失效则首包失败时重连重发
-    private func channel(fresh: Bool) async throws -> (WeTypeClient, reused: Bool) {
-        if !fresh, let c = client, c.alive { return (c, true) }
+    /// A running URLSession task alone cannot prove that an idle peer still responds.
+    private func channel(fresh: Bool) async throws -> (WeTypeConnection, reused: Bool) {
+        try Task.checkCancellation()
+        if !fresh, let c = client, c.alive, let lastReplyAt, now() - lastReplyAt < idleReuseLimit {
+            return (c, true)
+        }
         client?.close()
         client = nil
-        let c = try await WeTypeClient.open()
+        lastReplyAt = nil
+        let c = try await makeClient()
+        do { try Task.checkCancellation() }
+        catch { c.close(); throw error }
         client = c
+        lastReplyAt = now()
         return (c, false)
     }
 
-    func prepare() async { _ = try? await channel(fresh: false) }
+    func prepare() async {
+        let began = now()
+        do {
+            _ = try await channel(fresh: false)
+            Self.log.notice("prepare engine=\(self.diagnosticID, privacy: .public) ms=\(Int((self.now() - began) * 1000))")
+        } catch {
+            Self.log.notice("prepare-ended engine=\(self.diagnosticID, privacy: .public) cancelled=\(Task.isCancelled) ms=\(Int((self.now() - began) * 1000))")
+        }
+    }
 
     func run(audio: AsyncStream<[Int16]>, partial: @escaping (String) -> Void) async throws -> String {
+        let began = now()
         let audio = withLeadingSilence(audio)
         var (c, reused) = try await channel(fresh: false)
         let encoder = try Opus(application: Opus.audio, bitrate: 64000, complexity: 9)
@@ -30,21 +69,49 @@ final class WeTypeEngine: ASREngine {
         var packets: [Data] = []
         var seq = 0, totalBytes = 0
         var text = "", polished = ""
+        var requests = 0, maxReplyMS = 0
+        var sawRaw = false, sawPolished = false
+        Self.log.notice("start engine=\(self.diagnosticID, privacy: .public) voice=\(voiceId, privacy: .public) reused=\(reused)")
 
         func send(_ opus: Data?, seq: Int, isEnd: Bool) async throws {
+            let requestedAt = now()
+            requests += 1
             let packet = WeTypeClient.VoicePacket(voiceId: voiceId, opus: opus, seq: seq, totalBytes: totalBytes, isEnd: isEnd)
             let reply: (text: String, polished: String)
             do {
-                reply = try await c.voice(packet)
+                reply = try await c.voice(packet, timeout: reused ? firstReplyTimeout : 15)
             } catch {
+                // Esc is never a signal to open a replacement connection.
+                try Task.checkCancellation()
                 guard reused else { throw error }
+                Self.log.notice("reconnect voice=\(voiceId, privacy: .public) ms=\(Int((self.now() - began) * 1000))")
                 c.close()
                 (c, _) = try await channel(fresh: true)
-                reply = try await c.voice(packet)
+                reply = try await c.voice(packet, timeout: 15)
             }
+            try Task.checkCancellation()
             reused = false
-            if !reply.text.isEmpty { text = reply.text; partial(text) }
-            if !reply.polished.isEmpty { polished = reply.polished }
+            lastReplyAt = now()
+            maxReplyMS = max(maxReplyMS, Int((now() - requestedAt) * 1000))
+            if requests == 1 {
+                Self.log.notice("first-reply voice=\(voiceId, privacy: .public) ms=\(Int((self.now() - began) * 1000)) raw=\(!reply.text.isEmpty) polished=\(!reply.polished.isEmpty)")
+            }
+            if !reply.text.isEmpty {
+                if !sawRaw { Self.log.notice("first-raw voice=\(voiceId, privacy: .public) ms=\(Int((self.now() - began) * 1000))") }
+                sawRaw = true
+                text = reply.text
+                partial(text)
+            } else if text.isEmpty, !reply.polished.isEmpty {
+                // Preview text that is already eligible for the final result when
+                // the server has never supplied a raw transcript. Keep raw/final
+                // selection and the usual raw-preview path unchanged.
+                partial(reply.polished)
+            }
+            if !reply.polished.isEmpty {
+                if !sawPolished { Self.log.notice("first-polished voice=\(voiceId, privacy: .public) ms=\(Int((self.now() - began) * 1000))") }
+                sawPolished = true
+                polished = reply.polished
+            }
         }
         func upload(_ batch: [Data], isEnd: Bool) async throws {
             seq += 1
@@ -74,15 +141,17 @@ final class WeTypeEngine: ASREngine {
                 try await send(nil, seq: 0, isEnd: true)
             }
         } catch {
+            Self.log.notice("ended voice=\(voiceId, privacy: .public) cancelled=\(Task.isCancelled) ms=\(Int((self.now() - began) * 1000)) requests=\(requests)")
             c.close()
             if client === c { client = nil }
             throw error
         }
+        Self.log.notice("finished voice=\(voiceId, privacy: .public) ms=\(Int((self.now() - began) * 1000)) requests=\(requests) maxReplyMS=\(maxReplyMS)")
         return polished.isEmpty ? text : polished
     }
 }
 
-final class WeTypeClient {
+final class WeTypeClient: WeTypeConnection {
     struct VoicePacket {
         let voiceId: String
         let opus: Data?
@@ -180,7 +249,7 @@ final class WeTypeClient {
         uin = String(issued)
     }
 
-    func voice(_ p: VoicePacket) async throws -> (text: String, polished: String) {
+    func voice(_ p: VoicePacket, timeout: TimeInterval = 15) async throws -> (text: String, polished: String) {
         let inner = PBuf()
         inner.s(2, p.voiceId)
         if let opus = p.opus, !opus.isEmpty { inner.s(4, opus) }
@@ -192,7 +261,7 @@ final class WeTypeClient {
         let outer = PBuf()
         outer.m(1, inner)
 
-        let r = try await roundtrip("/api_v2", aesEncrypt(key(), snappyCompress(outer.data)), cmd: Self.cmdVoice, compress: "2")
+        let r = try await roundtrip("/api_v2", aesEncrypt(key(), snappyCompress(outer.data)), cmd: Self.cmdVoice, compress: "2", timeout: timeout)
         guard r.status == 200, !r.body.isEmpty else { throw ASRError("微信语音请求失败 \(r.status)") }
         var plain = try aesDecrypt(key(), r.body)
         if (r.headers["Kb-CompressionType"] ?? r.headers["CompressionType"]) == "2" {
@@ -213,7 +282,7 @@ final class WeTypeClient {
 
     /// 一条 WSS 上严格一问一答
     private func roundtrip(_ path: String, _ body: Data, cmd: Int, compress: String = "1",
-                           token: String = "") async throws -> (status: UInt64, headers: [String: String], body: Data) {
+                           token: String = "", timeout: TimeInterval = 15) async throws -> (status: UInt64, headers: [String: String], body: Data) {
         let dh = cmd == Self.cmdDH, genUin = cmd == Self.cmdUin
         if !(dh || genUin) { task += 1 }
         let taskId = dh || genUin ? cmd : task
@@ -252,7 +321,7 @@ final class WeTypeClient {
         frame.v(1, 0).v(2, 0).v(3, UInt64(taskId)).m(5, http)
         try await ws.send(frame.data)
 
-        let fields = try pbParse(try await ws.receive(timeout: 15)).bytes(4).map(pbParse) ?? []
+        let fields = try pbParse(try await ws.receive(timeout: timeout)).bytes(4).map(pbParse) ?? []
         var out: [String: String] = [:]
         for f in fields where f.field != 5 {
             guard case let .bytes(d) = f.value, let kv = try? pbParse(d), kv.count >= 2,

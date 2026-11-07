@@ -106,6 +106,27 @@ private final class DictationRig {
 /// Traceability and exact oracles: docs/dictation-baseline.md (R1–R4).
 @MainActor
 final class DictationSessionTests: XCTestCase {
+    func testRepeatedPartialsDoNotRefreshUIButEncodedRevisionsAndFinalAreDelivered() async throws {
+        let rig = DictationRig()
+        defer { rig.close() }
+        try rig.model.start(channel: .wetype)
+        try await eventually { rig.engines.first?.started == true }
+        let first = "完整预览e\u{301}"
+        let revised = "完整预览é"
+        for _ in 0..<20 { rig.engines[0].emit(first) }
+        rig.engines[0].emit(revised)
+        rig.engines[0].emit("下一句")
+        try await eventually { rig.updates.last == "下一句" }
+        XCTAssertEqual(rig.updates.count, 3)
+        XCTAssertTrue(rig.updates[0].utf16.elementsEqual(first.utf16))
+        XCTAssertTrue(rig.updates[1].utf16.elementsEqual(revised.utf16))
+        rig.model.end()
+        rig.engines[0].resolve(.success("完整定稿，最后一个尾字。"))
+        try await eventually { rig.results.count == 1 }
+        XCTAssertEqual(rig.results[0].text, "完整定稿，最后一个尾字。")
+        XCTAssertEqual(rig.updates.last, "完整定稿，最后一个尾字。")
+    }
+
     private func eventually(_ predicate: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
         for _ in 0..<1000 {
             if predicate() { return }

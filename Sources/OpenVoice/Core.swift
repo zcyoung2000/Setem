@@ -145,21 +145,28 @@ final class WebSocket {
 
     func receive(timeout: TimeInterval) async throws -> Data {
         let task = self.task
-        return try await withThrowingTaskGroup(of: Data.self) { group in
-            group.addTask {
-                switch try await task.receive() {
-                case let .data(d): return d
-                case let .string(s): return Data(s.utf8)
-                @unknown default: return Data()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withThrowingTaskGroup(of: Data.self) { group in
+                group.addTask {
+                    switch try await task.receive() {
+                    case let .data(d): return d
+                    case let .string(s): return Data(s.utf8)
+                    @unknown default: return Data()
+                    }
                 }
+                group.addTask {
+                    try await Task.sleep(for: .seconds(timeout))
+                    task.cancel(with: .goingAway, reason: nil)
+                    throw ASRError("服务器响应超时")
+                }
+                defer { group.cancelAll() }
+                return try await group.next()!
             }
-            group.addTask {
-                try await Task.sleep(for: .seconds(timeout))
-                task.cancel(with: .goingAway, reason: nil)
-                throw ASRError("服务器响应超时")
-            }
-            defer { group.cancelAll() }
-            return try await group.next()!
+        } onCancel: {
+            // Cancelling only the timeout child leaves Foundation's receive alive
+            // and the structured task group waiting for a reply that may never come.
+            task.cancel(with: .goingAway, reason: nil)
         }
     }
 

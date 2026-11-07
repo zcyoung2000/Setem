@@ -3,7 +3,34 @@ import XCTest
 @testable import OpenVoice
 
 @MainActor
+private final class CancellableWarmupEngine: ASREngine {
+    private(set) var preparing = false
+    private(set) var cancelled = false
+    func prepare() async {
+        preparing = true
+        do { try await Task.sleep(for: .seconds(60)) }
+        catch { cancelled = Task.isCancelled }
+        preparing = false
+    }
+    func run(audio: AsyncStream<[Int16]>, partial: @escaping (String) -> Void) async throws -> String { "" }
+}
+
+@MainActor
 final class DictationEnginePoolTests: XCTestCase {
+    func testCancellingExclusiveLeaseAlsoCancelsItsPendingWarmup() async throws {
+        let engine = CancellableWarmupEngine()
+        let pool = DictationEnginePool { _ in engine }
+        pool.prewarm(.wetype)
+        try await parityEventually { engine.preparing }
+        let lease = pool.take(.wetype)
+        var returned = false
+        let waiter = Task { await lease.ready(); returned = true }
+        defer { waiter.cancel() }
+        waiter.cancel()
+        try await parityEventually { returned && engine.cancelled }
+        XCTAssertFalse(engine.preparing)
+    }
+
     func testPoolWaitsForWarmupAndNeverSharesBusyEngine() async throws {
         let hardware = ParityCapture()
         var engines: [ParityEngine] = []

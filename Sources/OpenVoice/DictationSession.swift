@@ -121,7 +121,8 @@ final class DictationSession {
     }
 
     private func update(_ text: String, id: Int, generation gen: Int) {
-        guard isActive, generation == gen, let changed = transcript.update(id, text: text) else { return }
+        guard isActive, generation == gen, !transcript.hasIdenticalPartial(id, text: text),
+              let changed = transcript.update(id, text: text) else { return }
         if changed { onSpeech() }
         onUpdate(self.text)
     }

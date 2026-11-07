@@ -6,7 +6,15 @@ final class DictationEnginePool {
     struct Lease {
         let engine: ASREngine
         fileprivate let preparation: Task<Void, Never>?
-        func ready() async { await preparation?.value }
+        func ready() async {
+            await withTaskCancellationHandler {
+                await preparation?.value
+            } onCancel: {
+                // take() removes this entry from the idle pool, so only this
+                // recording owns the pending preparation and its connection.
+                preparation?.cancel()
+            }
+        }
     }
     private final class Entry {
         let engine: ASREngine
