@@ -37,6 +37,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         super.init()
         Channel.migrateLegacySelection(in: defaults)
+        self.hud.onStopRecording = { [weak self] in
+            guard let self, self.recording, self.autoStop else { return }
+            self.end()
+        }
     }
 
     private(set) lazy var dictation: DictationSession = {
@@ -165,7 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         self.autoStop = autoStop
-        hud.show(dictation.text, listening: true)
+        hud.show(dictation.text, listening: true, clickToStop: autoStop)
     }
 
     private func finishDictation(_ result: DictationSession.Result) {

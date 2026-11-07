@@ -311,6 +311,16 @@ private final class DictationHUDSurface: NSView {
 private final class DictationHUDContainer: NSView {
     let surface: DictationHUDSurface
     var renderedSize: NSSize?
+    var stopAction: (() -> Void)? {
+        didSet {
+            let enabled = stopAction != nil
+            setAccessibilityElement(enabled)
+            setAccessibilityRole(enabled ? .button : .group)
+            setAccessibilityLabel(enabled ? "停止录音" : nil)
+            setAccessibilityHelp(enabled ? "停止收音，识别完成后输入已说内容。" : nil)
+            window?.invalidateCursorRects(for: self)
+        }
+    }
 
     init(surface: DictationHUDSurface) {
         self.surface = surface
@@ -324,6 +334,29 @@ private final class DictationHUDContainer: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        return stopAction != nil && hit != nil ? self : hit
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { stopAction != nil }
+    override var needsPanelToBecomeKey: Bool { false }
+
+    override func mouseDown(with event: NSEvent) { stopAction?() }
+    // Stopping happens on mouse-down. A late release must not stop a resumed run.
+    override func mouseUp(with event: NSEvent) {}
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        if stopAction != nil { addCursorRect(bounds, cursor: .pointingHand) }
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        guard let stopAction else { return false }
+        stopAction()
+        return true
+    }
 
     override func layout() {
         super.layout()
@@ -356,6 +389,8 @@ final class HUD {
     private var settingsLayoutPending = false
     private var lastLayoutStyle: HUDStyle?
     private var lastLayoutReducedMotion: Bool?
+    private var clickToStop = false
+    var onStopRecording: (() -> Void)? { didSet { updateInteraction() } }
     var isVisible: Bool { panel.isVisible }
     var windowForDiagnostics: NSWindow { panel }
 
@@ -370,6 +405,7 @@ final class HUD {
         panel.hasShadow = true
         panel.level = .statusBar
         panel.ignoresMouseEvents = true
+        panel.becomesKeyOnlyIfNeeded = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.contentView = container
         observer = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
@@ -396,7 +432,23 @@ final class HUD {
         if let observer { NotificationCenter.default.removeObserver(observer) }
     }
 
-    func show(_ text: String, listening: Bool) { present(text, phase: listening ? .listening : .message) }
+    func show(_ text: String, listening: Bool, clickToStop: Bool = false) {
+        self.clickToStop = listening && clickToStop
+        present(text, phase: listening ? .listening : .message)
+    }
+
+    private func updateInteraction() {
+        let enabled = isVisible && phase == .listening && clickToStop && onStopRecording != nil
+        panel.ignoresMouseEvents = !enabled
+        container.stopAction = enabled ? { [weak self] in self?.stopFromClick() } : nil
+    }
+
+    private func stopFromClick() {
+        guard phase == .listening, clickToStop, let onStopRecording else { return }
+        clickToStop = false
+        updateInteraction()
+        onStopRecording()
+    }
 
     func showThinking() {
         present(phase == .listening || phase == .thinking ? surface.text : "", phase: .thinking)
@@ -413,6 +465,7 @@ final class HUD {
         self.phase = phase
         layout(text: text, opening: entering)
         panel.orderFrontRegardless()
+        updateInteraction()
     }
 
     func level(_ value: Float) {
@@ -446,6 +499,8 @@ final class HUD {
         resizeTimer = nil
         targetFrame = nil
         phase = .hidden
+        clickToStop = false
+        updateInteraction()
         // Recognition ownership ends immediately. The last rendered content scales
         // into a point without delaying final insertion or accepting late callbacks.
         guard isVisible, !reduceMotion() else {
