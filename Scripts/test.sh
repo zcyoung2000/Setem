@@ -6,5 +6,5 @@ cd "$(dirname "$0")/.."
 if [[ $# -gt 0 ]]; then
     swift test "$@"
 else
-    swift test --filter 'Dictation.*Tests|QwenInboxTests|ConnectionLifetimeTests|MeetingSessionTests|MeetingTests|SettingsWindowTests'
+    swift test --filter 'Dictation.*Tests|QwenInboxTests|ConnectionLifetimeTests|SettingsWindowTests'
 fi

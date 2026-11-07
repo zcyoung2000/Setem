@@ -17,7 +17,7 @@ final class DictationInputTests: XCTestCase {
             defaults.set(1.0, forKey: "silence")
             let shortcut = modifierTap ? Shortcut(keyCode: 55, modifiers: 0, name: "左 ⌘")
                 : Shortcut(keyCode: 49, modifiers: CGEventFlags([.maskControl, .maskShift]).rawValue, name: "Space")
-            let monitor = HotkeyMonitor(configuration: { .init(hold: .rightOption, send: .rightControl, tap: shortcut, meeting: nil) })
+            let monitor = HotkeyMonitor(configuration: { .init(hold: .rightOption, send: .rightControl, tap: shortcut) })
             let hardware = ParityCapture()
             let capture = DictationCapture(start: hardware.start, stop: hardware.stop)
             let hud = HUD(defaults: defaults, reduceMotion: { true })
@@ -92,7 +92,7 @@ final class DictationInputTests: XCTestCase {
         var inserted: [String] = [], fires: [() -> Void] = [], delays: [TimeInterval] = []
         var result: DictationSession.Result?
         model.onFinish = { result = $0; inserted.append($0.text) }
-        let monitor = HotkeyMonitor(configuration: { .init(hold: .rightOption, send: .rightControl, tap: nil, meeting: nil) },
+        let monitor = HotkeyMonitor(configuration: { .init(hold: .rightOption, send: .rightControl, tap: nil) },
                                     scheduleHold: { delay, fire in
             delays.append(delay); fires.append(fire)
             return Timer(timeInterval: delay, repeats: false) { _ in }
@@ -135,7 +135,7 @@ final class DictationInputTests: XCTestCase {
         defer { hardware.close(); HotkeyMonitor.paused = wasPaused }
         let capture = DictationCapture(start: hardware.start, stop: hardware.stop)
         var fires: [() -> Void] = [], confirmations = 0
-        let monitor = HotkeyMonitor(configuration: { .init(hold: .rightOption, send: .rightControl, tap: nil, meeting: nil) },
+        let monitor = HotkeyMonitor(configuration: { .init(hold: .rightOption, send: .rightControl, tap: nil) },
                                     scheduleHold: { delay, fire in
             fires.append(fire)
             return Timer(timeInterval: delay, repeats: false) { _ in }

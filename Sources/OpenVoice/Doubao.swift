@@ -13,7 +13,7 @@ final class DoubaoEngine: ASREngine {
     func run(audio: AsyncStream<[Int16]>, partial: @escaping (String) -> Void) async throws -> String {
         // Snapshot per run so reused engines pick up changes and retries keep the same option.
         let punctuation = UserDefaults.standard.object(forKey: "doubaoPunctuation") as? Bool ?? true
-        // MeetingPipeline already owns the durable replay. Avoid retaining the
+        // Strict final recognition owns its replay. Avoid retaining the
         // entire segment a second time while strict final recognition is running.
         if requireFinalResult {
             return try await Self.session(audio, requireFinalResult: true, punctuation: punctuation, partial: partial)

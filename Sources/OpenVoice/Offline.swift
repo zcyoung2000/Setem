@@ -271,7 +271,7 @@ final class OfflineEngine: ASREngine {
         guard OfflineAssets.installed else {
             throw ASRError("本地模型未下载，请在设置中确认下载")
         }
-        // Overlapping meeting segments must not reset another segment's local recognizer.
+        // Dedicated recognizers must not reset another concurrent local recognizer.
         let w = warmWorker ?? (dedicatedWorker ? OfflineWorker() : OfflineWorker.shared)
         return try await withTaskCancellationHandler {
             try await recognize(audio: audio, worker: w, partial: partial)

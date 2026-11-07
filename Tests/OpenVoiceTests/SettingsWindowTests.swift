@@ -13,7 +13,7 @@ final class SettingsWindowTests: XCTestCase {
         defaults.set(true, forKey: "silenceStop")
         defaults.set(1.0, forKey: "silence")
         for _ in 0..<2 {
-            let window = SettingsWindow(meeting: MeetingSession(), defaults: defaults)
+            let window = SettingsWindow(defaults: defaults)
             defer { window.close() }
             window.makeKeyAndOrderFront(nil)
             try await settle(window)
@@ -41,11 +41,11 @@ final class SettingsWindowTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         for _ in 0..<2 {
-            let window = SettingsWindow(meeting: MeetingSession(), defaults: defaults)
+            let window = SettingsWindow(defaults: defaults)
             defer { window.close() }
             window.makeKeyAndOrderFront(nil)
             try await settle(window)
-            let labels = ["识别渠道", "快捷键", "会议转写", "声音与界面", "权限"]
+            let labels = ["识别渠道", "快捷键", "声音与界面", "权限"]
             for (index, tab) in SettingsTab.allCases.enumerated() {
                 try press(labels[index], in: window)
                 try await settle(window)
@@ -72,7 +72,7 @@ final class SettingsWindowTests: XCTestCase {
         let suite = "OpenVoice-CompareFocus-" + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let window = SettingsWindow(meeting: MeetingSession(), defaults: defaults)
+        let window = SettingsWindow(defaults: defaults)
         defer { window.close() }
         window.makeKeyAndOrderFront(nil)
         try await settle(window)
@@ -98,7 +98,7 @@ final class SettingsWindowTests: XCTestCase {
         let suite = "OpenVoice-ShortcutRecording-" + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite); HotkeyMonitor.paused = false }
-        let window = SettingsWindow(meeting: MeetingSession(), defaults: defaults)
+        let window = SettingsWindow(defaults: defaults)
         window.makeKeyAndOrderFront(nil)
         window.navigation.tab = .hotkey
         try await settle(window)
@@ -217,7 +217,7 @@ final class SettingsWindowTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set("wetype", forKey: "channel")
         defaults.set(HUDStyle.compact.rawValue, forKey: "hudStyle")
-        let window = SettingsWindow(meeting: MeetingSession(), defaults: defaults)
+        let window = SettingsWindow(defaults: defaults)
         window.orderFrontRegardless()
         defer { window.close() }
         try await settle(window)
@@ -252,7 +252,7 @@ final class SettingsWindowTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set("all", forKey: "channel")
         defaults.set(["doubao", "wetype"], forKey: "multi")
-        let window = SettingsWindow(meeting: MeetingSession(), defaults: defaults)
+        let window = SettingsWindow(defaults: defaults)
         defer { window.close() }
         window.makeKeyAndOrderFront(nil)
         try await settle(window)
@@ -270,7 +270,7 @@ final class SettingsWindowTests: XCTestCase {
         let suite = "OpenVoice-LiveHUDSize-" + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defaults.set(HUDStyle.compact.rawValue, forKey: "hudStyle")
-        let window = SettingsWindow(meeting: MeetingSession(), defaults: defaults)
+        let window = SettingsWindow(defaults: defaults)
         let hud = HUD(defaults: defaults, reduceMotion: { true })
         defer { hud.hide(); window.close(); defaults.removePersistentDomain(forName: suite) }
         window.navigation.tab = .audio
@@ -288,7 +288,7 @@ final class SettingsWindowTests: XCTestCase {
         try await parityEventually { abs(hud.windowForDiagnostics.frame.width - compact.width) < 1 }
         XCTAssertGreaterThan(standard.width, compact.width)
         window.close()
-        let reopened = SettingsWindow(meeting: MeetingSession(), defaults: defaults)
+        let reopened = SettingsWindow(defaults: defaults)
         defer { reopened.close() }
         reopened.navigation.tab = .audio
         reopened.makeKeyAndOrderFront(nil)
@@ -304,7 +304,7 @@ final class SettingsWindowTests: XCTestCase {
         let suite = "OpenVoice-OutputSetting-" + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let window = SettingsWindow(meeting: MeetingSession(), defaults: defaults)
+        let window = SettingsWindow(defaults: defaults)
         window.navigation.tab = .audio
         window.makeKeyAndOrderFront(nil)
         try await settle(window)
@@ -314,7 +314,7 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertTrue(defaults.bool(forKey: DictationOutput.removeTrailingPunctuationKey))
         XCTAssertEqual(DictationOutput.textForInsertion("你好。", defaults: defaults), "你好")
         window.close()
-        let reopened = SettingsWindow(meeting: MeetingSession(), defaults: defaults)
+        let reopened = SettingsWindow(defaults: defaults)
         defer { reopened.close() }
         reopened.navigation.tab = .audio
         reopened.makeKeyAndOrderFront(nil)
@@ -331,7 +331,7 @@ final class SettingsWindowTests: XCTestCase {
         let suite = "OpenVoice-ShortcutSettings-" + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let window = SettingsWindow(meeting: MeetingSession(), defaults: defaults)
+        let window = SettingsWindow(defaults: defaults)
         window.orderFrontRegardless()
         defer { window.close(); HotkeyMonitor.paused = false }
         try await settle(window)
@@ -340,11 +340,9 @@ final class SettingsWindowTests: XCTestCase {
         try press("点按快捷键", in: window)
         XCTAssertTrue(HotkeyMonitor.paused)
 
-        try press("会议转写", in: window)
+        try press("声音与界面", in: window)
         try await settle(window)
         XCTAssertFalse(HotkeyMonitor.paused)
-        try press("会议快捷键", in: window)
-        XCTAssertTrue(HotkeyMonitor.paused)
         window.close()
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertFalse(HotkeyMonitor.paused)

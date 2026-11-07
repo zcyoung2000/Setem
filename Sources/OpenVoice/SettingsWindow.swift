@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 enum SettingsTab: String, CaseIterable, Identifiable {
-    case channel, hotkey, meeting, audio, permission
+    case channel, hotkey, audio, permission
 
     var id: String { rawValue }
 
@@ -10,7 +10,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .channel: doubao ? 430 : 330
         case .hotkey: 280
-        case .meeting: 210
         case .audio: 280
         case .permission: 250
         }
@@ -26,7 +25,7 @@ final class SettingsNavigation: ObservableObject {
 final class SettingsWindow: NSWindow {
     let navigation = SettingsNavigation()
 
-    init(meeting: MeetingSession, defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard) {
         Channel.migrateLegacySelection(in: defaults)
         Hotkey.removeRetiredSettings(in: defaults)
         let channel = Channel.current(in: defaults)
@@ -36,7 +35,7 @@ final class SettingsWindow: NSWindow {
                    backing: .buffered, defer: false)
         title = "OpenVoice 设置"
         isReleasedWhenClosed = false
-        let settings = SettingsView(meeting: meeting, navigation: navigation, defaults: defaults) { [weak self] height in
+        let settings = SettingsView(navigation: navigation, defaults: defaults) { [weak self] height in
             self?.resizeContent(to: height)
         }
         contentView = NSHostingView(rootView: AnyView(settings.defaultAppStorage(defaults)))

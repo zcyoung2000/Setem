@@ -7,7 +7,7 @@
 - Follow `docs/dictation-baseline.md`: continuing while finalizing must preserve pending
   finals; an old task must never stop a newer recording or change its text/UI/timeout.
 - Follow `docs/dictation-parity.md` against its pinned upstream commit. Keep the
-  meeting and hold-to-send extensions; do not silently change upstream transcript rules.
+  hold-to-send extension; do not silently change upstream transcript rules.
 - Route single-channel completion through `DictationSession`, candidate selection
   through `DictationPicker`, and hardware ownership/pre-roll through `DictationCapture`.
   Do not put shared recorder/UI cleanup in an engine task's catch/defer.

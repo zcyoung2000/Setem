@@ -9,13 +9,12 @@ final class HotkeyMonitor {
         let hold: Hotkey
         let send: Hotkey
         let tap: Shortcut?
-        let meeting: Shortcut?
     }
     private let configuration: () -> Configuration
     private let scheduleHold: (TimeInterval, @escaping () -> Void) -> Timer
 
     init(configuration: @escaping () -> Configuration = {
-        Configuration(hold: .current, send: .sendHold, tap: .tap, meeting: .meeting)
+        Configuration(hold: .current, send: .sendHold, tap: .tap)
     }, scheduleHold: @escaping (TimeInterval, @escaping () -> Void) -> Timer = { delay, fire in
         Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { _ in fire() }
     }) {
@@ -31,7 +30,6 @@ final class HotkeyMonitor {
     var onLongPress: (Bool) -> Void = { _ in }
     var onRelease: (Bool) -> Void = { _ in }
     var onTap: () -> Void = {}
-    var onMeeting: () -> Void = {}
     var onEscape: () -> Void = {}
     /// 设置里录制快捷键时暂停
     static var paused = false
@@ -85,13 +83,6 @@ final class HotkeyMonitor {
         let sendHold = config.send
         switch type {
         case .keyDown:
-            if let meeting = config.meeting, !meeting.isModifier, code == meeting.keyCode,
-               event.flags.intersection(Shortcut.mask).rawValue == meeting.modifiers {
-                cancelPending()
-                swallowedCode = code
-                if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 { onMeeting() }
-                return true
-            }
             if code == 53, event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
                 onEscape()
             }

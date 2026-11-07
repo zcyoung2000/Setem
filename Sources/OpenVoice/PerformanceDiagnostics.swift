@@ -40,19 +40,6 @@ func startPerformanceBenchmark(directory: URL) async throws {
     report["audioFrames"] = audioFrames
     report["audioChecksum"] = audioChecksum
 
-    var mixer = MeetingAudioMixer()
-    let first = [Int16](repeating: 12_345, count: FrameConverter.frame)
-    let second = [Int16](repeating: -2345, count: FrameConverter.frame)
-    let mixingStarted = CACurrentMediaTime()
-    var mixedChecksum = 0
-    for i in 0..<30_000 {
-        try mixer.add(first, at: i)
-        try mixer.add(second, at: i)
-        mixedChecksum += Int(mixer.drain(until: i + 1)[0][0])
-    }
-    report["mixingMilliseconds"] = (CACurrentMediaTime() - mixingStarted) * 1000
-    report["mixedChecksum"] = mixedChecksum
-
     let suite = "OpenVoice-Performance-" + UUID().uuidString
     guard let defaults = UserDefaults(suiteName: suite) else { throw ASRError("无法创建隔离的性能测试设置") }
     defaults.set(HUDStyle.standard.rawValue, forKey: "hudStyle")

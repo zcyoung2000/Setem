@@ -111,8 +111,7 @@ if let i = args.firstIndex(of: "--preview-settings"), i + 1 < args.count {
     MainActor.assumeIsolated {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
-        let model = MeetingSession()
-        let window = SettingsWindow(meeting: model)
+        let window = SettingsWindow()
         if let index = args.firstIndex(of: "--settings-tab"), index + 1 < args.count,
            let tab = SettingsTab(rawValue: args[index + 1]) {
             window.navigation.tab = tab
@@ -141,50 +140,6 @@ if let i = args.firstIndex(of: "--preview-settings"), i + 1 < args.count {
                 view.cacheDisplay(in: view.bounds, to: bitmap)
                 guard let png = bitmap.representation(using: .png, properties: [:]) else { throw ASRError("无法生成设置预览") }
                 try png.write(to: URL(fileURLWithPath: args[i + 1]))
-                exit(0)
-            } catch { fputs("\(error)\n", stderr); exit(1) }
-        }
-        app.run()
-    }
-}
-
-if let i = args.firstIndex(of: "--preview-meeting"), i + 1 < args.count {
-    MainActor.assumeIsolated {
-        let app = NSApplication.shared
-        app.setActivationPolicy(.accessory)
-        let directory = URL(fileURLWithPath: args[i + 1], isDirectory: true)
-        try! FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let model = MeetingSession()
-        model.phase = .recording
-        model.meter.push(0.65)
-        model.record.frameCount = 1850
-        model.record.segments = [
-            MeetingSegment(id: 0, startFrame: 0, endFrame: 900, sealed: true, text: "我们先对齐今天的会议目标。新版会保留每个人的想法，让讨论可以继续，记录也始终跟得上。", provider: "豆包输入法", state: .complete),
-            MeetingSegment(id: 1, startFrame: 900, endFrame: 1700, sealed: true, text: "好的，我来补充一下时间安排。我们计划周五完成第一轮测试，下周一起收集反馈。", provider: "微信输入法", state: .complete),
-            MeetingSegment(id: 2, startFrame: 1700, endFrame: 1850, text: "接下来，我们看看具体的实现方案……", provider: "微信输入法", state: .transcribing),
-        ]
-        let panel = MeetingPanel(model: model)
-        if args.contains("--benchmark") {
-            startMeetingBenchmark(panel: panel, model: model, directory: directory)
-            app.run()
-        }
-        panel.show()
-        Task { @MainActor in
-            do {
-                try await Task.sleep(for: .milliseconds(500))
-                try panel.savePreview(to: directory.appendingPathComponent("meeting-compact.png"))
-                panel.toggle()
-                try await Task.sleep(for: .milliseconds(90))
-                try panel.savePreview(to: directory.appendingPathComponent("meeting-transition.png"))
-                try await Task.sleep(for: .milliseconds(400))
-                try panel.savePreview(to: directory.appendingPathComponent("meeting-expanded.png"))
-                model.phase = .paused
-                try await Task.sleep(for: .milliseconds(120))
-                try panel.savePreview(to: directory.appendingPathComponent("meeting-paused.png"))
-                model.phase = .recording
-                try await Task.sleep(for: .milliseconds(120))
-                try panel.savePreview(to: directory.appendingPathComponent("meeting-resumed.png"))
-                print("Meeting previews: \(directory.path)")
                 exit(0)
             } catch { fputs("\(error)\n", stderr); exit(1) }
         }

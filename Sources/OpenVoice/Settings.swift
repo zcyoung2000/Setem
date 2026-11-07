@@ -169,11 +169,6 @@ struct Shortcut: Equatable {
     }
 
     static let defaultRaw = Shortcut(keyCode: 54, modifiers: 0, name: "右 ⌘").raw
-    static let meetingDefaultRaw = Shortcut(keyCode: 46, modifiers: CGEventFlags([.maskCommand, .maskShift]).rawValue, name: "M").raw
-    static var meeting: Shortcut? {
-        Shortcut(raw: UserDefaults.standard.string(forKey: "meetingShortcut") ?? meetingDefaultRaw)
-    }
-
     /// "off" 表示关闭；按设置项分别缓存，事件回调里频繁读取
     private static var tapCache: (String, Shortcut?) = ("", nil)
     static var tap: Shortcut? {

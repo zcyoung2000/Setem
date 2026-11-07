@@ -13,9 +13,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let hud: HUD
     private let insertText: (String, Bool) -> Void
     private let defaults: UserDefaults
-    private let meeting = MeetingSession()
-    private var meetingPanel: MeetingPanel?
-    private var sleepObserver: Any?
     private var statusItem: NSStatusItem!
     private var settingsWindow: NSWindow?
     private var recording = false
@@ -76,17 +73,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
-        meetingPanel = MeetingPanel(model: meeting)
-        meeting.onDismiss = { [weak self] in self?.meetingPanel?.hide() }
-        meeting.onCaptureChanged = { [weak self] in self?.setIcon(recording: self?.recording ?? false) }
-        meeting.canBeginCapture = { [weak self] in self?.hasSession == false && self?.capture.isPrimed == false && !HotkeyMonitor.paused }
-        // A sleeping Mac cannot record. Stop explicitly and retain every captured frame.
-        sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.meeting.interrupt("电脑即将睡眠，会议已暂停；唤醒后点击恢复转写。")
-            }
-        }
-
         requestInitialAccessibilityPermission()
         if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
             AVCaptureDevice.requestAccess(for: .audio) { _ in }
@@ -111,13 +97,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         hotkey.onTap = { [weak self] in
             guard let self else { return }
-            guard !self.meeting.isCapturing else { self.meetingPanel?.show(); return }
             // An existing session either stops capturing or keeps waiting for its
             // final. A tap never cancels it or starts another segment while thinking.
             if self.hasSession { self.end() }
             else { self.begin(isTap: true, sendOnFinish: false) }
         }
-        hotkey.onMeeting = { [weak self] in self?.toggleMeeting() }
         hotkey.onEscape = { [weak self] in
             guard let self, self.hasSession || self.capture.isPrimed else { return }
             self.abort(nil)
@@ -135,7 +119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard !defaults.bool(forKey: "didPromptAccessibility") else { return }
         // Existing installations have already been offered permission. An update must
         // not repeat the system prompt when the stored authorization is still denied.
-        let configured = ["hotkey", "tapShortcut", "sendHotkey", "channel", "micUID", "meetingShortcut"]
+        let configured = ["hotkey", "tapShortcut", "sendHotkey", "channel", "micUID"]
             .contains { defaults.object(forKey: $0) != nil }
         defaults.set(true, forKey: "didPromptAccessibility")
         guard !configured, !AXIsProcessTrusted() else { return }
@@ -144,14 +128,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         Task {
-            await meeting.prepareForTermination()
             sender.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
     }
 
     private func primeRecording() {
-        guard !meeting.isCapturing, !recording, !HotkeyMonitor.paused else { return }
+        guard !recording, !HotkeyMonitor.paused else { return }
         try? capture.arm()
         enginePool.prewarm(dictation.isActive ? dictation.channel : Channel.current(in: defaults))
     }
@@ -168,7 +151,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func begin(isTap: Bool = false, sendOnFinish: Bool = false) {
-        guard !meeting.isCapturing else { capture.disarm(); meetingPanel?.show(); return }
         guard !recording else { return }
         do {
             guard try dictation.start(channel: Channel.current(in: defaults), sendsReturn: sendOnFinish) else { return }
@@ -213,7 +195,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func setIcon(recording: Bool) {
-        statusItem?.button?.image = NSImage(systemSymbolName: meeting.isCapturing ? "waveform.circle.fill" : recording ? "mic.fill" : "mic", accessibilityDescription: "OpenVoice")
+        statusItem?.button?.image = NSImage(systemSymbolName: recording ? "mic.fill" : "mic", accessibilityDescription: "OpenVoice")
     }
 
     /// Bundle ID and the app-support directory changed with the OpenVoice rename.
@@ -234,24 +216,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
-        let meetingItem = NSMenuItem(title: meeting.hasOpenMeeting ? "显示会议转写" : "开始会议转写", action: #selector(showMeeting), keyEquivalent: "")
-        meetingItem.target = self
-        menu.addItem(meetingItem)
-        if meeting.hasOpenMeeting {
-            let pauseTitle = meeting.phase == .paused ? (meeting.record.captureEnded == true ? "继续会议转写" : "恢复会议转写") : "暂停会议转写"
-            let pause = NSMenuItem(title: pauseTitle, action: #selector(toggleMeetingPause), keyEquivalent: "")
-            pause.target = self
-            pause.isEnabled = meeting.phase == .recording || meeting.phase == .paused
-            menu.addItem(pause)
-        } else if MeetingSession.latestDirectory != nil {
-            let restore = NSMenuItem(title: "恢复上次会议", action: #selector(restoreMeeting), keyEquivalent: "")
-            restore.target = self
-            menu.addItem(restore)
-        }
-        let records = NSMenuItem(title: "打开会议记录", action: #selector(openMeetingRecords), keyEquivalent: "")
-        records.target = self
-        menu.addItem(records)
-        menu.addItem(.separator())
         for c in Channel.available {
             let item = NSMenuItem(title: c.title, action: #selector(selectChannel(_:)), keyEquivalent: "")
             item.target = self
@@ -291,47 +255,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private func toggleMeeting() {
-        if meeting.hasOpenMeeting {
-            meetingPanel?.toggle()
-            meetingPanel?.show()
-        } else { showMeeting() }
-    }
-
-    @objc private func showMeeting() {
-        guard !HotkeyMonitor.paused else {
-            fail("请先结束渠道对比或快捷键设置，再开始会议转写")
-            return
-        }
-        guard !hasSession, !capture.isPrimed else {
-            fail("请先结束当前语音输入，再开始会议转写")
-            return
-        }
-        if !meeting.hasOpenMeeting { meeting.start() }
-        meetingPanel?.show()
-    }
-
-    @objc private func toggleMeetingPause() {
-        meeting.phase == .paused ? meeting.resume() : meeting.pause()
-        meetingPanel?.show()
-    }
-
-    @objc private func restoreMeeting() {
-        guard !hasSession, !capture.isPrimed, !meeting.hasOpenMeeting else { return }
-        meeting.restoreLatest()
-        meetingPanel?.show()
-    }
-
-    @objc private func openMeetingRecords() {
-        do {
-            try FileManager.default.createDirectory(at: MeetingArchive.root, withIntermediateDirectories: true)
-            NSWorkspace.shared.open(MeetingArchive.root)
-        } catch { fail(error.localizedDescription) }
-    }
-
     @objc private func openSettings() {
         if settingsWindow?.contentView == nil {
-            settingsWindow = SettingsWindow(meeting: meeting)
+            settingsWindow = SettingsWindow()
         }
         // Accessory apps need an explicit activation request before their key window
         // is allowed to rise above the current foreground application.

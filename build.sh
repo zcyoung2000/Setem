@@ -58,8 +58,7 @@ cat > "$APP/Contents/Info.plist" <<EOF
     <key>CFBundleVersion</key><string>$BUILD</string>
     <key>LSMinimumSystemVersion</key><string>15.0</string>
     <key>LSUIElement</key><true/>
-    <key>NSMicrophoneUsageDescription</key><string>语音输入和会议转写需要录制麦克风声音，并发送到可用识别渠道转写。</string>
-    <key>NSScreenCaptureUsageDescription</key><string>会议转写需要收录电脑播放的声音，与麦克风声音一起转为文字；不会保存屏幕画面。</string>
+    <key>NSMicrophoneUsageDescription</key><string>语音输入需要录制麦克风声音，并发送到可用识别渠道转写。</string>
 </dict>
 </plist>
 EOF

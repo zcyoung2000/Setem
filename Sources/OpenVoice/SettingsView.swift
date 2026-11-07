@@ -4,7 +4,6 @@ import Combine
 import SwiftUI
 
 struct SettingsView: View {
-    @ObservedObject var meeting: MeetingSession
     @ObservedObject var navigation: SettingsNavigation
     let defaults: UserDefaults
     var onResize: (CGFloat) -> Void = { _ in }
@@ -12,7 +11,6 @@ struct SettingsView: View {
     @AppStorage("doubaoPunctuation") private var doubaoPunctuation = true
     @AppStorage("hotkey") private var hotkey = Hotkey.rightOption.rawValue
     @AppStorage("tapShortcut") private var tapShortcut = Shortcut.defaultRaw
-    @AppStorage("meetingShortcut") private var meetingShortcut = Shortcut.meetingDefaultRaw
     @AppStorage("sendHotkey") private var sendHotkey = Hotkey.rightControl.rawValue
     @AppStorage("hudStyle") private var hudStyle = HUDStyle.compact.rawValue
     @AppStorage(DictationOutput.removeTrailingPunctuationKey) private var removeTrailingPunctuation = false
@@ -27,9 +25,8 @@ struct SettingsView: View {
     @State private var channelBeforeOffline: String?
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
-    init(meeting: MeetingSession, navigation: SettingsNavigation, defaults: UserDefaults = .standard,
+    init(navigation: SettingsNavigation, defaults: UserDefaults = .standard,
          onResize: @escaping (CGFloat) -> Void = { _ in }) {
-        self.meeting = meeting
         self.navigation = navigation
         self.defaults = defaults
         self.onResize = onResize
@@ -48,9 +45,6 @@ struct SettingsView: View {
             hotkeyPane
                 .tabItem { Label("快捷键", systemImage: "command") }
                 .tag(SettingsTab.hotkey)
-            meetingPane
-                .tabItem { Label("会议转写", systemImage: "person.2") }
-                .tag(SettingsTab.meeting)
             audioPane
                 .tabItem { Label("声音与界面", systemImage: "slider.horizontal.3") }
                 .tag(SettingsTab.audio)
@@ -117,8 +111,7 @@ struct SettingsView: View {
                     Spacer()
                     Button("渠道对比") { showCompare = true }
                         .controlSize(.small)
-                        .disabled(meeting.isCapturing)
-                        .help(meeting.isCapturing ? "请先暂停会议录音，再测试识别渠道" : "录音一次，对比各渠道的识别结果")
+                        .help("录音一次，对比各渠道的识别结果")
                 }
             }
             if channel == Channel.doubao.rawValue {
@@ -164,28 +157,6 @@ struct SettingsView: View {
                 HotkeyMenuItem(hotkey: item).tag(item.rawValue)
             }
         }
-    }
-
-    private var meetingPane: some View {
-        Form {
-            Section {
-                LabeledContent("会议快捷键") {
-                    ShortcutField(kind: "会议", allowsModifier: false, raw: $meetingShortcut)
-                }
-                if let meeting = Shortcut(raw: meetingShortcut), let tap = Shortcut(raw: tapShortcut),
-                   meeting.keyCode == tap.keyCode, meeting.modifiers == tap.modifiers {
-                    Text("会议快捷键与点按快捷键冲突，请重新绑定。")
-                        .font(.caption).foregroundStyle(.red)
-                }
-            } header: {
-                Text("会议转写")
-            } footer: {
-                Text("按下开始持续录制转写，再按展开或收起悬浮窗。同时收录麦克风和电脑声音；可拖动悬浮窗、暂停或恢复，音频和文字保存在本机。")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-        .formStyle(.grouped)
     }
 
     private var audioPane: some View {
