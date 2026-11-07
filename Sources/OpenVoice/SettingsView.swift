@@ -15,6 +15,7 @@ struct SettingsView: View {
     @AppStorage("hudStyle") private var hudStyle = HUDStyle.compact.rawValue
     @AppStorage(DictationOutput.removeTrailingPunctuationKey) private var removeTrailingPunctuation = false
     @AppStorage("micUID") private var micUID = ""
+    @AppStorage(Recorder.suppressPlaybackKey) private var suppressPlayback = false
     @State private var microphones = Microphone.all()
     @ObservedObject private var offline = OfflineAssets.shared
     @State private var axTrusted = AXIsProcessTrusted()
@@ -170,6 +171,8 @@ struct SettingsView: View {
                 }
                 Toggle("去除末尾标点", isOn: $removeTrailingPunctuation)
                     .toggleStyle(.switch)
+                Toggle("抑制电脑播放声音", isOn: $suppressPlayback)
+                    .toggleStyle(.switch)
                 Picker("麦克风", selection: $micUID) {
                     Text("系统默认").tag("")
                     ForEach(microphones) { Text($0.name).tag($0.id) }
@@ -180,7 +183,7 @@ struct SettingsView: View {
             } header: {
                 Text("声音与界面")
             } footer: {
-                Text("紧凑使用较小的浮窗与字号，标准提供更宽的预览。识别结果定稿后一次性输入。\n开启去除末尾标点后，仅移除最终输入文本末尾的一个标点，保留句中标点。")
+                Text("紧凑使用较小的浮窗与字号，标准提供更宽的预览。识别结果定稿后一次性输入。\n开启去除末尾标点后，仅移除最终输入文本末尾的一个标点，保留句中标点。\n抑制电脑播放声音使用系统回声消除，下次录音生效。准备麦克风提示消失后再说话；效果因设备而异，系统可能降低播放音量。")
                     .font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -347,7 +350,7 @@ struct ChannelCompareSheet: View {
     private var recordingPrompt: String {
         switch compare.phase {
         case .idle: compare.rows.isEmpty ? "开始录音" : "再次录音对比"
-        case .recording: "说完了"
+        case .recording: compare.preparing ? "正在准备麦克风…" : "说完了"
         case .recognizing: "取消识别"
         }
     }

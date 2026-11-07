@@ -10,7 +10,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .channel: doubao ? 430 : 330
         case .hotkey: 280
-        case .audio: 280
+        case .audio: 320
         case .permission: 250
         }
     }

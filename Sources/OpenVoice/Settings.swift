@@ -263,6 +263,7 @@ final class ChannelCompare: ObservableObject {
     @Published var phase = Phase.idle
     @Published var rows: [Row] = []
     @Published var error: String?
+    @Published private(set) var preparing = false
 
     private let recorder = Recorder()
     private let pool = DictationEnginePool()
@@ -303,10 +304,16 @@ final class ChannelCompare: ObservableObject {
         HotkeyMonitor.paused = true
         do {
             let source = try recorder.start()
+            let captureFailure = recorder.failureSnapshot
+            preparing = recorder.isPreparing
+            recorder.onReady = { [weak self] in
+                guard let self, self.generation == gen else { return }
+                self.preparing = false
+            }
             phase = .recording
             for channel in active { pool.prewarm(channel) }
             let streams = Self.fanout(source, n: active.count)
-            work = Task { await run(active, streams, gen: gen) }
+            work = Task { await run(active, streams, gen: gen, captureFailure: captureFailure) }
         } catch {
             HotkeyMonitor.paused = false
             phase = .idle
@@ -317,27 +324,32 @@ final class ChannelCompare: ObservableObject {
     private func stopRecord() {
         guard phase == .recording else { return }
         recorder.stop()
+        preparing = false
         phase = .recognizing
     }
 
-    private func run(_ channels: [Channel], _ streams: [AsyncStream<[Int16]>], gen: Int) async {
+    private func run(_ channels: [Channel], _ streams: [AsyncStream<[Int16]>], gen: Int,
+                     captureFailure: @escaping () -> String?) async {
         await withTaskGroup(of: Void.self) { g in
             for (i, ch) in channels.enumerated() {
                 let stream = streams[i]
                 let lease = pool.take(ch)
-                g.addTask { await self.recognize(ch, stream, lease: lease, gen: gen) }
+                g.addTask { await self.recognize(ch, stream, lease: lease, gen: gen, captureFailure: captureFailure) }
             }
         }
         DispatchQueue.main.async { [weak self] in
             guard let self, self.generation == gen else { return }
             if self.phase == .recording { self.recorder.stop() }
             HotkeyMonitor.paused = false
+            self.preparing = false
+            if let error = captureFailure() { self.error = error }
             self.phase = .idle
             self.work = nil
         }
     }
 
-    private func recognize(_ ch: Channel, _ stream: AsyncStream<[Int16]>, lease: DictationEnginePool.Lease, gen: Int) async {
+    private func recognize(_ ch: Channel, _ stream: AsyncStream<[Int16]>, lease: DictationEnginePool.Lease, gen: Int,
+                           captureFailure: @escaping () -> String?) async {
         let t0 = Date()
         do {
             await lease.ready()
@@ -345,13 +357,14 @@ final class ChannelCompare: ObservableObject {
             let text = try await lease.engine.run(audio: stream) { [weak self] p in
                 DispatchQueue.main.async { [weak self] in self?.set(ch, gen: gen, text: p) }
             }
+            if let error = captureFailure() { throw ASRError(error) }
             if !Task.isCancelled { pool.reuse(lease.engine, channel: ch) }
             let sec = String(format: "%.2fs", Date().timeIntervalSince(t0))
             DispatchQueue.main.async { [weak self] in self?.set(ch, gen: gen, text: text, status: sec) }
         } catch is CancellationError {
             DispatchQueue.main.async { [weak self] in self?.set(ch, gen: gen, status: "已取消") }
         } catch {
-            let message = error.localizedDescription
+            let message = captureFailure() ?? error.localizedDescription
             DispatchQueue.main.async { [weak self] in self?.set(ch, gen: gen, status: message) }
         }
     }

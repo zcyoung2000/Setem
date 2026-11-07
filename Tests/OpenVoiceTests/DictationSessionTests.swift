@@ -81,9 +81,11 @@ private final class DictationRig {
     var results: [DictationSession.Result] = []
     var cancellations: [(text: String, message: String?)] = []
     var configure: (DictationTestEngine) -> Void = { _ in }
+    var captureFailure: () -> (() -> String?) = { { nil } }
     lazy var model: DictationSession = {
         let model = DictationSession(startCapture: { [unowned self] in try capture.start() },
                                      stopCapture: { [unowned self] in capture.stop() },
+                                     captureFailure: { [unowned self] in captureFailure() },
                                      makeEngine: { [unowned self] channel in
             let engine = DictationTestEngine()
             configure(engine)
@@ -106,6 +108,59 @@ private final class DictationRig {
 /// Traceability and exact oracles: docs/dictation-baseline.md (R1–R4).
 @MainActor
 final class DictationSessionTests: XCTestCase {
+    func testDeferredCaptureFailurePreservesThePendingExactFinal() async throws {
+        let rig = DictationRig()
+        defer { rig.close() }
+        var recording = 0
+        rig.captureFailure = {
+            recording += 1
+            let own = recording
+            return { own == 2 ? "回声抑制设备启动失败" : nil }
+        }
+        try rig.model.start(channel: .wetype)
+        try await eventually { rig.engines[0].started }
+        rig.model.end()
+        try rig.model.start(channel: .wetype)
+        try await eventually { rig.engines.count == 2 && rig.engines[1].started }
+        rig.engines[1].resolve(.success(""))
+        try await eventually { !rig.model.isRecording }
+        XCTAssertTrue(rig.model.isActive)
+        XCTAssertTrue(rig.results.isEmpty)
+        XCTAssertTrue(rig.cancellations.isEmpty)
+        rig.engines[0].resolve(.success("上一段完整润色稿，保留最后一个尾字。"))
+        try await eventually { rig.results.count == 1 }
+        XCTAssertEqual(rig.results[0], .init(text: "上一段完整润色稿，保留最后一个尾字。",
+                                            error: "回声抑制设备启动失败", sendsReturn: false))
+    }
+
+    func testOldDeferredCaptureFailureCannotStopTheNewRecording() async throws {
+        let rig = DictationRig()
+        defer { rig.close() }
+        var recording = 0
+        rig.captureFailure = {
+            recording += 1
+            let own = recording
+            return { own == 1 ? "旧录音设备启动失败" : nil }
+        }
+        try rig.model.start(channel: .wetype)
+        try await eventually { rig.engines[0].started }
+        rig.model.end()
+        try rig.model.start(channel: .wetype)
+        try await eventually { rig.engines.count == 2 && rig.engines[1].started }
+        rig.engines[0].resolve(.success(""))
+        try await eventually { rig.engines[0].returned }
+        try await Task.sleep(for: .milliseconds(10))
+        XCTAssertTrue(rig.model.isRecording)
+        XCTAssertEqual(rig.capture.stops, 1)
+        rig.capture.send(201)
+        rig.model.end()
+        rig.engines[1].resolve(.success("第二段完整润色稿，尾字。"))
+        try await eventually { rig.results.count == 1 }
+        XCTAssertEqual(rig.results[0].text, "第二段完整润色稿，尾字。")
+        XCTAssertEqual(rig.results[0].error, "旧录音设备启动失败")
+        XCTAssertEqual(rig.capture.stops, 2)
+    }
+
     func testRepeatedPartialsDoNotRefreshUIButEncodedRevisionsAndFinalAreDelivered() async throws {
         let rig = DictationRig()
         defer { rig.close() }

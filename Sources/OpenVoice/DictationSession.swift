@@ -12,6 +12,7 @@ final class DictationSession {
 
     private let startCapture: () throws -> AsyncStream<[Int16]>
     private let stopCapture: () -> Void
+    private let captureFailure: () -> (() -> String?)
     private let makeEngine: (Channel) -> ASREngine
     private let enginePool: DictationEnginePool?
     private let sleep: (TimeInterval) async throws -> Void
@@ -36,12 +37,14 @@ final class DictationSession {
 
     init(startCapture: @escaping () throws -> AsyncStream<[Int16]>,
          stopCapture: @escaping () -> Void,
+         captureFailure: @escaping () -> (() -> String?) = { { nil } },
          makeEngine: @escaping (Channel) -> ASREngine = DictationSession.makeEngine,
          enginePool: DictationEnginePool? = nil,
          timeout: TimeInterval = 15,
          sleep: @escaping (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) }) {
         self.startCapture = startCapture
         self.stopCapture = stopCapture
+        self.captureFailure = captureFailure
         self.makeEngine = makeEngine
         self.enginePool = enginePool
         self.timeout = timeout
@@ -63,6 +66,7 @@ final class DictationSession {
         guard !isRecording else { return false }
         // Failure to open the next recording must leave the pending session and timer intact.
         let audio = try startCapture()
+        let captureFailure = self.captureFailure()
         invalidateTimeout()
         if !isActive {
             generation += 1
@@ -88,12 +92,18 @@ final class DictationSession {
                 let text = try await engine.run(audio: audio) { [weak self] partial in
                     DispatchQueue.main.async { [weak self] in self?.update(partial, id: id, generation: gen) }
                 }
-                if !Task.isCancelled { pool?.reuse(engine, channel: channel) }
+                let failure = captureFailure()
+                if !Task.isCancelled, failure == nil { pool?.reuse(engine, channel: channel) }
                 // Use the same FIFO as partials, including when a vendor returns/throws immediately.
-                DispatchQueue.main.async { [weak self] in self?.complete(id: id, generation: gen, text: text, error: nil) }
+                DispatchQueue.main.async { [weak self] in
+                    self?.complete(id: id, generation: gen, text: text, error: failure, captureFailed: failure != nil)
+                }
             } catch {
-                let message = error.localizedDescription
-                DispatchQueue.main.async { [weak self] in self?.complete(id: id, generation: gen, text: "", error: message) }
+                let failure = captureFailure()
+                let message = failure ?? error.localizedDescription
+                DispatchQueue.main.async { [weak self] in
+                    self?.complete(id: id, generation: gen, text: "", error: message, captureFailed: failure != nil)
+                }
             }
         }
         return true
@@ -125,12 +135,12 @@ final class DictationSession {
         onUpdate(self.text)
     }
 
-    private func complete(id: Int, generation gen: Int, text: String, error: String?) {
+    private func complete(id: Int, generation gen: Int, text: String, error: String?, captureFailed: Bool = false) {
         guard isActive, generation == gen,
               transcript.finish(id, text: text, error: error, keepPartial: false) else { return }
         tasks[id] = nil
         // Finishing an older segment must not stop the recorder owned by a newer one.
-        if transcript.finished { stopRecording() }
+        if transcript.finished || (captureFailed && recordingSegment == id) { stopRecording() }
         onUpdate(self.text)
         finishOrWait()
     }

@@ -5,7 +5,7 @@ import SwiftUI
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let hotkey: HotkeyMonitor
-    private let recorder = Recorder()
+    private let recorder: Recorder
     private let enginePool: DictationEnginePool
     private let providedCapture: DictationCapture?
     private lazy var capture = providedCapture ?? DictationCapture(start: { [unowned self] in try self.recorder.start() },
@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
          defaults: UserDefaults = .standard, hotkey: HotkeyMonitor = HotkeyMonitor(),
          insertText: @escaping (String, Bool) -> Void = { TextInserter.insert($0, sendsReturn: $1) }) {
         providedCapture = capture
+        recorder = Recorder(defaults: defaults)
         self.hotkey = hotkey
         self.enginePool = enginePool ?? DictationEnginePool()
         self.hud = hud ?? HUD()
@@ -39,12 +40,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self, self.recording, self.tapRecording else { return }
             self.end()
         }
+        recorder.onReady = { [weak self] in
+            guard let self, self.recording else { return }
+            self.hud.show(self.dictation.text, listening: true, clickToStop: self.tapRecording)
+        }
         configureHotkeys()
     }
 
     private(set) lazy var dictation: DictationSession = {
         let model = DictationSession(startCapture: { [unowned self] in try self.capture.take() },
-                                     stopCapture: { [unowned self] in self.capture.stop() }, enginePool: enginePool)
+                                     stopCapture: { [unowned self] in self.capture.stop() },
+                                     captureFailure: { [unowned self] in self.recorder.failureSnapshot }, enginePool: enginePool)
         model.onCaptureChanged = { [weak self] in self?.captureChanged($0) }
         model.onUpdate = { [weak self] text in
             guard let self else { return }
@@ -159,7 +165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         tapRecording = isTap
-        hud.show(dictation.text, listening: true, clickToStop: isTap)
+        hud.show(recorder.isPreparing ? "正在准备麦克风…" : dictation.text, listening: true, clickToStop: isTap)
     }
 
     private func finishDictation(_ result: DictationSession.Result) {
