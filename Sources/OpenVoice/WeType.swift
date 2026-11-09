@@ -149,6 +149,7 @@ final class WeTypeEngine: ASREngine {
             throw error
         }
         Self.log.notice("finished voice=\(voiceId, privacy: .public) ms=\(Int((self.now() - began) * 1000)) requests=\(requests) maxReplyMS=\(maxReplyMS)")
+        if DebugCapture.enabled { DebugCapture.note("wetype voice=\(voiceId) raw=\(text) polished=\(polished)") }
         return polished.isEmpty ? text : polished
     }
 }

@@ -85,7 +85,9 @@ final class DictationSession {
     func start(channel: Channel, sendsReturn: Bool = false) throws -> Bool {
         guard !isRecording else { return false }
         // Failure to open the next recording must leave the pending session and timer intact.
-        let audio = try startCapture()
+        var audio = try startCapture()
+        let debugName = DebugCapture.enabled ? DebugCapture.makeName() : nil
+        if let debugName { audio = DebugCapture.tee(audio, name: debugName) }
         let captureFailure = self.captureFailure()
         invalidateTimeout()
         if !isActive {
@@ -123,6 +125,7 @@ final class DictationSession {
                 }
                 let failure = captureFailure()
                 if let engine, !Task.isCancelled, failure == nil { pool?.reuse(engine, channel: channel) }
+                if let debugName { DebugCapture.note("\(debugName) channel=\(channel.rawValue) final=\(text)") }
                 // Use the same FIFO as partials, including when a vendor returns/throws immediately.
                 DispatchQueue.main.async { [weak self] in
                     self?.complete(id: id, generation: gen, text: text, error: failure, captureFailed: failure != nil)

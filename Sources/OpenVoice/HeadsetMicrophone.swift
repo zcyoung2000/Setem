@@ -282,7 +282,9 @@ final class HeadsetMicrophone: @unchecked Sendable {
         tap.ended = true
         let callbacks = tap.completions
         tap.completions.removeAll()
-        Self.log.notice("tap-ended frames=\(tap.frames) silent=\(tap.silentFrames) gaps=\(tap.gaps) longestGapMs=\(tap.longestGap * 20) failed=\(error != nil)")
+        let levels = tap.levels.sorted()
+        func level(_ fraction: Double) -> Int { levels.isEmpty ? -120 : levels[min(levels.count - 1, Int(Double(levels.count) * fraction))] }
+        Self.log.notice("tap-ended frames=\(tap.frames) silent=\(tap.silentFrames) gaps=\(tap.gaps) longestGapMs=\(tap.longestGap * 20) dbP10=\(level(0.1)) dbP50=\(level(0.5)) dbP90=\(level(0.9)) dbP99=\(level(0.99)) peakDb=\(tap.peakDb) failed=\(error != nil)")
         if let error { tap.onFailure?(error) }
         callbacks.forEach { $0() }
         output?.finish()
@@ -300,6 +302,9 @@ private final class ResidentTap: RecordingSource, @unchecked Sendable {
     var ended = false
     var completions: [() -> Void] = []
     var frames = 0, silentFrames = 0, gaps = 0, longestGap = 0
+    /// Per-frame RMS and the peak sample, in whole dBFS, to judge speech level.
+    var levels: [Int] = []
+    var peakDb = -120
     private var run = 0, heard = false
 
     init(owner: HeadsetMicrophone) { self.owner = owner }
@@ -311,6 +316,10 @@ private final class ResidentTap: RecordingSource, @unchecked Sendable {
     /// Exact zeros after the link carried sound are Bluetooth dropouts, logged per recording.
     func receive(_ frame: [Int16], sound: Bool) {
         frames += 1
+        var energy = 0.0, peak: Int32 = 0
+        for sample in frame { energy += Double(sample) * Double(sample); peak = max(peak, abs(Int32(sample))) }
+        levels.append(Int(20 * log10(max((energy / Double(frame.count)).squareRoot() / 32768, 1e-6))))
+        peakDb = max(peakDb, Int(20 * log10(max(Double(peak) / 32768, 1e-6))))
         if sound {
             if run > 0, heard { gaps += 1; longestGap = max(longestGap, run) }
             run = 0
