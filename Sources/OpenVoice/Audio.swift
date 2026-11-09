@@ -51,6 +51,14 @@ protocol RecordingSource: AnyObject {
     var onFailure: ((Error) -> Void)? { get set }
     func start() throws -> AsyncStream<[Int16]>
     func stop()
+    /// Completion follows native queue disposal, including any delayed tail.
+    func stop(completion: @escaping () -> Void)
+    var changesPlaybackRoute: Bool { get }
+}
+
+extension RecordingSource {
+    func stop(completion: @escaping () -> Void) { stop(); completion() }
+    var changesPlaybackRoute: Bool { false }
 }
 
 /// Each recording owns its source. A setting change never replaces live capture
@@ -110,8 +118,8 @@ final class Recorder {
             muteLease = lease
             return stream
         } catch {
-            input.stop()
-            lease?.finish()
+            let changesRoute = input.changesPlaybackRoute
+            input.stop { lease?.finish(afterRouteChange: changesRoute) }
             throw error
         }
     }
@@ -124,12 +132,14 @@ final class Recorder {
         let input = source, lease = muteLease
         source = nil
         muteLease = nil
-        input?.stop()
-        // Audio is restored at the capture boundary, never after ASR finalization.
-        lease?.finish()
+        guard let input else { lease?.finish(); return }
+        let changesRoute = input.changesPlaybackRoute
+        // Keep playback muted through native tail drain and headset shutdown.
+        // Recognition finalization remains independent of playback restoration.
+        input.stop { lease?.finish(afterRouteChange: changesRoute) }
     }
 
-    deinit { source?.stop(); muteLease?.finish() }
+    deinit { stop() }
 
     /// RMS → dBFS，-50dB 以下视为静音，-10dB 封顶
     static func level(_ frame: [Int16]) -> Float {
@@ -154,6 +164,7 @@ final class AudioQueueSource: RecordingSource {
     private var sampleCount = 0
     private var pending = AudioFrameBuffer()
     private var continuation: AsyncStream<[Int16]>.Continuation?
+    private var stoppedCallbacks: [() -> Void] = []
     /// 每 20ms 帧的音量（0...1），在采集队列回调
     var onLevel: ((Float) -> Void)?
     var onFailure: ((Error) -> Void)?
@@ -233,21 +244,37 @@ final class AudioQueueSource: RecordingSource {
         }
     }
 
+    var changesPlaybackRoute: Bool {
+        let transport = input.transportType
+        return transport == kAudioDeviceTransportTypeBluetooth || transport == kAudioDeviceTransportTypeBluetoothLE
+    }
+
+    func stop(completion: @escaping () -> Void) {
+        guard active else { completion(); return }
+        stoppedCallbacks.append(completion)
+        stop()
+    }
+
     private func finish() {
         // All callbacks must finish before the last sub-frame is padded or the
         // stream ends. Wired inputs stop immediately; Bluetooth reaches this after
         // draining, or as a bounded failure fallback.
         do { try input.stop(immediately: true) } catch { onFailure?(error) }
-        callbackQueue.sync {
-            if let tail = pending.flush() { continuation?.yield(tail) }
+        let output = callbackQueue.sync { () -> AsyncStream<[Int16]>.Continuation? in
+            let output = continuation
+            if let tail = pending.flush() { output?.yield(tail) }
             pending = AudioFrameBuffer()
-            continuation?.finish()
             continuation = nil
             Self.log.notice("stopped samples=\(self.sampleCount)")
+            return output
         }
         input.dispose()
         active = false
         drainTask = nil
+        let callbacks = stoppedCallbacks
+        stoppedCallbacks.removeAll()
+        callbacks.forEach { $0() }
+        output?.finish()
     }
 
     deinit { input.dispose() }

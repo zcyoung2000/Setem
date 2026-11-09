@@ -12,11 +12,13 @@ final class PlaybackHardwareDouble: PlaybackHardware {
     var failControl: PlaybackControl?
     var watches = 0
     var subscriptions = 0
+    var rates: [String: Float64] = [:]
     init() {
         route = [.init(controls: [speaker])]
         values = [speaker: 0, volume: 0.6]
     }
     func outputs() throws -> [PlaybackOutput] { route }
+    func sampleRates() -> [String: Float64] { rates }
     func value(_ control: PlaybackControl) throws -> Float32 {
         guard let value = values[control] else { throw ASRError("设备已断开") }
         return value
@@ -218,6 +220,84 @@ final class DictationRecorderTests: XCTestCase {
 }
 
 final class DictationPlaybackMuteTests: XCTestCase {
+    func testHeadsetRestorationWaitsForPlaybackProfileAndItsVolumeSynchronization() {
+        let hardware = PlaybackHardwareDouble()
+        var clock: TimeInterval = 0
+        hardware.rates = [hardware.speaker.uid: 48000]
+        let silencer = PlaybackSilencer(hardware: hardware, now: { clock }, automaticallyRestore: false)
+        let lease = silencer.acquire()
+        hardware.rates[hardware.speaker.uid] = 24000
+        lease.finish(afterRouteChange: true)
+        clock = 2
+        silencer.checkRestoration()
+        XCTAssertEqual(hardware.values[hardware.speaker], 1, "No playback in the temporary recording profile")
+        hardware.rates[hardware.speaker.uid] = 48000
+        hardware.values[hardware.speaker] = 0 // Bluetooth profile replacement clears mute.
+        hardware.changed?()
+        XCTAssertEqual(hardware.values[hardware.speaker], 1, "Protect playback while the driver synchronizes volume")
+        clock = 2.2
+        hardware.changed?() // A later stream/format notification restarts the quiet period.
+        clock = 2.3
+        silencer.checkRestoration()
+        XCTAssertEqual(hardware.values[hardware.speaker], 1)
+        clock = 2.5
+        silencer.checkRestoration()
+        XCTAssertEqual(hardware.values[hardware.speaker], 0)
+        XCTAssertEqual(hardware.watches, 0)
+        XCTAssertEqual(hardware.writes.map(\.1), [1, 1, 0], "One restoration after profile and volume settle")
+    }
+
+    func testNewCaptureCancelsOldRestorationAndKeepsOriginalPlaybackProfile() {
+        let hardware = PlaybackHardwareDouble()
+        var clock: TimeInterval = 0
+        hardware.rates = [hardware.speaker.uid: 48000]
+        let silencer = PlaybackSilencer(hardware: hardware, now: { clock }, automaticallyRestore: false)
+        let first = silencer.acquire()
+        hardware.rates[hardware.speaker.uid] = 24000
+        first.finish(afterRouteChange: true)
+        let second = silencer.acquire()
+        clock = 4
+        silencer.checkRestoration()
+        XCTAssertEqual(hardware.values[hardware.speaker], 1)
+        second.finish(afterRouteChange: true)
+        clock = 4.5
+        silencer.checkRestoration()
+        XCTAssertEqual(hardware.values[hardware.speaker], 1, "Inherit playback profile, not the preceding capture's HFP rate")
+        hardware.rates[hardware.speaker.uid] = 48000
+        hardware.changed?()
+        clock = 4.8
+        silencer.checkRestoration()
+        XCTAssertEqual(hardware.values[hardware.speaker], 0)
+        XCTAssertEqual(hardware.watches, 0)
+    }
+
+    func testHeadsetRestorationIsBoundedAndPreservesUserVolumeChanges() {
+        let hardware = PlaybackHardwareDouble()
+        var clock: TimeInterval = 0
+        hardware.route = [.init(controls: [hardware.volume])]
+        hardware.rates = [hardware.volume.uid: 48000]
+        let silencer = PlaybackSilencer(hardware: hardware, now: { clock }, automaticallyRestore: false)
+        let lease = silencer.acquire()
+        hardware.rates[hardware.volume.uid] = 24000 // Another app continues using the mic.
+        lease.finish(afterRouteChange: true)
+        hardware.values[hardware.volume] = 0.35
+        clock = 3
+        silencer.checkRestoration()
+        XCTAssertEqual(hardware.values[hardware.volume], 0.35)
+        XCTAssertEqual(hardware.watches, 0)
+        XCTAssertEqual(hardware.writes.map(\.1), [0])
+    }
+
+    func testBuiltInCaptureDoesNotWaitForConnectedHeadphonesToChangeProfile() {
+        let hardware = PlaybackHardwareDouble()
+        hardware.rates = [hardware.speaker.uid: 48000]
+        let silencer = PlaybackSilencer(hardware: hardware, automaticallyRestore: false)
+        let lease = silencer.acquire()
+        lease.finish()
+        XCTAssertEqual(hardware.values[hardware.speaker], 0)
+        XCTAssertEqual(hardware.watches, 0)
+    }
+
     func testListenerInstallationNotificationsDrainAndRouteChangesOnlyReplaceChangedDevices() throws {
         var route: Set<String> = ["system", "speaker"]
         var installed: [String: () -> Void] = [:]

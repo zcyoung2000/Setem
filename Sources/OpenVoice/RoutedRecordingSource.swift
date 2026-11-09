@@ -31,6 +31,8 @@ final class RoutedRecordingSource: RecordingSource, @unchecked Sendable {
     private var lastFrameAt: TimeInterval?
     private var samples = 0
     private var nonzero = false
+    private var usedHeadset = false
+    private var stoppedCallbacks: [() -> Void] = []
     var onLevel: ((Float) -> Void)?
     var onFailure: ((Error) -> Void)?
 
@@ -59,6 +61,7 @@ final class RoutedRecordingSource: RecordingSource, @unchecked Sendable {
             samples = 0
             nonzero = false
             fellBack = false
+            usedHeadset = false
             do { try openNext() }
             catch { finish(error: nil); throw error }
             if automaticallyMonitor {
@@ -84,6 +87,7 @@ final class RoutedRecordingSource: RecordingSource, @unchecked Sendable {
         var lastError: Error = recoveryError ?? ASRError("MacBook 内置麦克风不可用，请开盖后重试")
         for candidate in candidates {
             guard attempts[candidate.id, default: 0] < 2 else { continue }
+            usedHeadset = usedHeadset || candidate.isAirPods
             // One helper lease covers both startup attempts on this device.
             let lease = candidate.isAirPods ? holdHeadset(candidate) : nil
             while attempts[candidate.id, default: 0] < 2 {
@@ -176,9 +180,15 @@ final class RoutedRecordingSource: RecordingSource, @unchecked Sendable {
         }
     }
 
-    func stop() {
+    var changesPlaybackRoute: Bool { queue.sync { usedHeadset } }
+
+    func stop() { stop(completion: {}) }
+
+    func stop(completion: @escaping () -> Void) {
         queue.sync {
-            guard running, !stopping else { return }
+            guard running else { completion(); return }
+            stoppedCallbacks.append(completion)
+            guard !stopping else { return }
             stopping = true
             timer?.cancel()
             timer = nil
@@ -197,6 +207,9 @@ final class RoutedRecordingSource: RecordingSource, @unchecked Sendable {
         input = nil
         if let error { onFailure?(error) }
         Self.log.notice("ended samples=\(self.samples) nonzero=\(self.nonzero) failed=\(error != nil)")
+        let callbacks = stoppedCallbacks
+        stoppedCallbacks.removeAll()
+        callbacks.forEach { $0() }
         output?.finish()
         output = nil
     }

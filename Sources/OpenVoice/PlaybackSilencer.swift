@@ -1,5 +1,6 @@
 import AppKit
 import CoreAudio
+import OSLog
 
 struct PlaybackControl: Hashable {
     enum Kind: Hashable { case mute, volume }
@@ -19,18 +20,23 @@ protocol PlaybackHardware: AnyObject {
     func value(_ control: PlaybackControl) throws -> Float32
     func set(_ value: Float32, for control: PlaybackControl) throws
     func observe(_ changed: @escaping () -> Void) -> () -> Void
+    func sampleRates() -> [String: Float64]
+}
+
+extension PlaybackHardware {
+    func sampleRates() -> [String: Float64] { [:] }
 }
 
 final class PlaybackMuteLease {
     private let lock = NSLock()
-    private var release: (() -> Void)?
-    init(_ release: @escaping () -> Void) { self.release = release }
-    func finish() {
+    private var release: ((Bool) -> Void)?
+    init(_ release: @escaping (Bool) -> Void) { self.release = release }
+    func finish(afterRouteChange: Bool = false) {
         lock.lock()
         let release = self.release
         self.release = nil
         lock.unlock()
-        release?()
+        release?(afterRouteChange)
     }
     deinit { finish() }
 }
@@ -39,16 +45,37 @@ final class PlaybackMuteLease {
 /// unmute another capture. There is no audio processing or idle polling.
 final class PlaybackSilencer {
     static let shared = PlaybackSilencer(hardware: CoreAudioPlaybackHardware())
+    private static let log = Logger(subsystem: "do.j3.openvoice", category: "PlaybackMute")
     private let lock = NSRecursiveLock()
     private let hardware: PlaybackHardware
     private var clients: [UUID: (Error) -> Void] = [:]
     private var originals: [PlaybackControl: Float32] = [:]
     private var stopObserving: (() -> Void)?
+    private let now: () -> TimeInterval
+    private let automaticallyRestore: Bool
+    private var playbackRates: [String: Float64] = [:]
+    private struct Restoration {
+        let id = UUID()
+        let deadline: TimeInterval
+        var stableSince: TimeInterval?
+    }
+    private var restoration: Restoration?
+    private var restoreWork: DispatchWorkItem?
 
-    init(hardware: PlaybackHardware) { self.hardware = hardware }
+    init(hardware: PlaybackHardware,
+         now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+         automaticallyRestore: Bool = true) {
+        self.hardware = hardware
+        self.now = now
+        self.automaticallyRestore = automaticallyRestore
+    }
 
     func acquire(onFailure: @escaping (Error) -> Void = { _ in }) -> PlaybackMuteLease {
         lock.lock()
+        // A resumed capture inherits the original playback profile and mute;
+        // a late restoration from the preceding capture cannot unmute it.
+        if clients.isEmpty, originals.isEmpty { playbackRates = hardware.sampleRates() }
+        cancelRestoration()
         let id = UUID()
         clients[id] = onFailure
         if stopObserving == nil {
@@ -60,18 +87,32 @@ final class PlaybackSilencer {
         // Keep the lease and route observation after a transient profile change.
         // The next hardware notification can apply mute when controls reappear.
         if let failure { onFailure(failure) }
-        return PlaybackMuteLease { [self] in release(id) }
+        return PlaybackMuteLease { [self] settles in release(id, afterRouteChange: settles) }
     }
 
-    private func release(_ id: UUID) {
+    private func release(_ id: UUID, afterRouteChange: Bool) {
         lock.lock(); defer { lock.unlock() }
-        clients.removeValue(forKey: id)
-        if clients.isEmpty { reset() }
+        guard clients.removeValue(forKey: id) != nil else { return }
+        guard clients.isEmpty else { return }
+        if afterRouteChange, !originals.isEmpty, !playbackRates.isEmpty {
+            // macOS can defer HFP -> playback reconfiguration by about 2 s.
+            // Wait for the pre-recording profile plus 250 ms of stability, with
+            // a 3 s bound if another application keeps the headset mic open.
+            restoration = Restoration(deadline: now() + 3)
+            Self.log.notice("restore-wait reason=headset-profile")
+            checkRestoration()
+        } else if restoration == nil { reset() }
     }
 
     private func routeChanged() {
         lock.lock()
-        guard !clients.isEmpty || !originals.isEmpty else { lock.unlock(); return }
+        guard !clients.isEmpty || !originals.isEmpty || restoration != nil else { lock.unlock(); return }
+        if restoration != nil {
+            restoration?.stableSince = nil
+            checkRestoration()
+            lock.unlock()
+            return
+        }
         do {
             try reconcile()
             stopObservingIfFinished()
@@ -95,11 +136,21 @@ final class PlaybackSilencer {
                 $0.uid == control.uid && $0.kind == control.kind && $0.element == control.element
             }) { originals[control] = originals.removeValue(forKey: old) }
         }
-        if !clients.isEmpty, outputs.contains(where: { $0.controls.isEmpty }) { throw Self.unavailable }
-        for control in Array(originals.keys) where clients.isEmpty || !controls.contains(control) { restore(control) }
-        guard !clients.isEmpty else { return }
+        let muting = !clients.isEmpty || restoration != nil
+        if muting, outputs.contains(where: { $0.controls.isEmpty }) { throw Self.unavailable }
+        for control in Array(originals.keys) where !muting || !controls.contains(control) { restore(control) }
+        guard muting else { return }
         let before = Set(originals.keys)
         do {
+            // The Bluetooth driver may clear mute while replacing its profile.
+            // Keep the transition silent without changing any volume sliders.
+            if restoration != nil {
+                for control in controls where control.kind == .mute && originals[control] != nil {
+                    if try hardware.value(control) != control.silentValue {
+                        try hardware.set(control.silentValue, for: control)
+                    }
+                }
+            }
             for control in controls where originals[control] == nil {
                 let value = try hardware.value(control)
                 // Pre-existing silence belongs to the user, not this capture.
@@ -125,17 +176,60 @@ final class PlaybackSilencer {
 
     private func reset() {
         for control in Array(originals.keys) { restore(control) }
+        if originals.isEmpty { playbackRates.removeAll() }
         stopObservingIfFinished()
     }
 
+    /// The clock is injectable; no hardware, audio or wall-clock delay in tests.
+    func checkRestoration() {
+        lock.lock(); defer { lock.unlock() }
+        guard var pending = restoration, clients.isEmpty else { return }
+        let time = now()
+        var stable = false
+        do {
+            try reconcile()
+            let current = hardware.sampleRates()
+            stable = playbackRates.allSatisfy { current[$0.key] == $0.value }
+        } catch { /* A changing profile can temporarily hide its controls. */ }
+        if stable {
+            if pending.stableSince == nil { pending.stableSince = time }
+        } else { pending.stableSince = nil }
+        restoration = pending
+        let settled = pending.stableSince.map { time - $0 >= 0.25 } ?? false
+        if settled || time >= pending.deadline {
+            cancelRestoration()
+            reset()
+            Self.log.notice("restore-ready profileSettled=\(settled)")
+            return
+        }
+        guard automaticallyRestore else { return }
+        restoreWork?.cancel()
+        let pendingID = pending.id
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.lock.lock(); defer { self.lock.unlock() }
+            guard self.restoration?.id == pendingID else { return }
+            self.checkRestoration()
+        }
+        restoreWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: work)
+    }
+
+    private func cancelRestoration() {
+        restoreWork?.cancel()
+        restoreWork = nil
+        restoration = nil
+    }
+
     private func stopObservingIfFinished() {
-        guard clients.isEmpty, originals.isEmpty else { return }
+        guard clients.isEmpty, originals.isEmpty, restoration == nil else { return }
         stopObserving?()
         stopObserving = nil
     }
 
     func restoreAll() {
         lock.lock(); defer { lock.unlock() }
+        cancelRestoration()
         clients.removeAll()
         reset()
     }
@@ -260,6 +354,17 @@ final class CoreAudioPlaybackHardware: PlaybackHardware {
         }
     }
 
+    func sampleRates() -> [String: Float64] {
+        var rates: [String: Float64] = [:]
+        for device in devices() {
+            var rate: Float64 = 0
+            if let uid = uid(device),
+               read(device, address(kAudioDevicePropertyNominalSampleRate, scope: kAudioObjectPropertyScopeGlobal), into: &rate),
+               rate > 0 { rates[uid] = rate }
+        }
+        return rates
+    }
+
     private func controls(_ device: AudioDeviceID, uid: String) -> [PlaybackControl] {
         func control(_ kind: PlaybackControl.Kind, element: UInt32) -> PlaybackControl? {
             let selector = kind == .mute ? kAudioDevicePropertyMute : kAudioDevicePropertyVolumeScalar
@@ -342,6 +447,7 @@ final class CoreAudioPlaybackHardware: PlaybackHardware {
             for device in devices() {
                 properties.append((device, address(kAudioDevicePropertyDataSource)))
                 properties.append((device, address(kAudioDevicePropertyStreams)))
+                properties.append((device, address(kAudioDevicePropertyNominalSampleRate, scope: kAudioObjectPropertyScopeGlobal)))
             }
             return Set(properties.map { Property($0.0, $0.1) })
         }, install: { property, notify in

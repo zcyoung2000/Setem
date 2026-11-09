@@ -43,6 +43,25 @@ private final class AudioTailEngine: ASREngine {
 
 @MainActor
 final class DictationAudioQueueTests: XCTestCase {
+    func testStoppedCallbackFollowsNativeDisposalAndPreservesTheTail() async throws {
+        let input = DelayedAudioInput()
+        let source = AudioQueueSource(microphoneUID: "", input: input)
+        let stream = try source.start()
+        var stopped = false
+        input.send(101)
+        source.stop {
+            XCTAssertTrue(input.disposed)
+            stopped = true
+        }
+        XCTAssertFalse(stopped)
+        input.send(102, count: 37)
+        input.running = false
+        var values: [Int16] = []
+        for await frame in stream { values.append(frame[0]) }
+        XCTAssertTrue(stopped)
+        XCTAssertEqual(values, [101, 102])
+    }
+
     func testNonBluetoothInputsFinishSynchronouslyAndKeepTheExactTail() async throws {
         for transport: UInt32? in [kAudioDeviceTransportTypeBuiltIn, kAudioDeviceTransportTypeUSB,
                                    kAudioDeviceTransportTypeThunderbolt, kAudioDeviceTransportTypeVirtual,

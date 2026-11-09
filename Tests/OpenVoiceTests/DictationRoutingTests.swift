@@ -158,6 +158,76 @@ final class DictationRoutingTests: XCTestCase {
         XCTAssertEqual(values, [101, 102], "Key-up releases Recorder ownership before Bluetooth tail delivery")
     }
 
+    func testPlaybackStaysMutedUntilNativeTailAndHeadsetOutputHaveClosed() async throws {
+        let input = RoutingInputDouble()
+        input.finishOnStop = false
+        let hardware = PlaybackHardwareDouble()
+        let microphone = airPods
+        var outputClosed = false
+        let suite = "OpenVoice-RoutingMuteTail-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: Recorder.mutePlaybackKey)
+        let recorder = Recorder(defaults: defaults, silencer: PlaybackSilencer(hardware: hardware)) { _ in
+            RoutedRecordingSource(mode: .airPodsPreferred, microphones: { [microphone] },
+                makeSource: { _ in input }, holdHeadset: { _ in
+                    AudioRouteLease {
+                        XCTAssertEqual(hardware.values[hardware.speaker], 1,
+                                       "Headset output must close while playback is still muted")
+                        outputClosed = true
+                    }
+                }, automaticallyMonitor: false)
+        }
+        let stream = try recorder.start()
+        let frames = Task { var values: [Int16] = []; for await frame in stream { values.append(frame[0]) }; return values }
+        input.send(101)
+        recorder.stop()
+        XCTAssertEqual(hardware.values[hardware.speaker], 1, "Key-up must not unmute the still-open headset")
+        XCTAssertFalse(outputClosed)
+        input.send(102)
+        input.output?.finish()
+        let values = await frames.value
+        XCTAssertEqual(values, [101, 102])
+        XCTAssertTrue(outputClosed)
+        XCTAssertEqual(hardware.values[hardware.speaker], 0)
+    }
+
+    func testOldTailCompletionCannotUnmuteOrStopTheNextRecording() async throws {
+        let hardware = PlaybackHardwareDouble()
+        let microphone = airPods
+        var inputs: [RoutingInputDouble] = []
+        let suite = "OpenVoice-RoutingMuteOverlap-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: Recorder.mutePlaybackKey)
+        let recorder = Recorder(defaults: defaults, silencer: PlaybackSilencer(hardware: hardware)) { _ in
+            let input = RoutingInputDouble()
+            input.finishOnStop = false
+            inputs.append(input)
+            return RoutedRecordingSource(mode: .airPodsPreferred, microphones: { [microphone] },
+                makeSource: { _ in input }, holdHeadset: { _ in nil }, automaticallyMonitor: false)
+        }
+        let old = try recorder.start()
+        inputs[0].send(101)
+        recorder.stop()
+        let new = try recorder.start()
+        inputs[1].send(201)
+        inputs[0].send(102)
+        inputs[0].output?.finish()
+        var oldValues: [Int16] = []
+        for await frame in old { oldValues.append(frame[0]) }
+        XCTAssertEqual(oldValues, [101, 102])
+        XCTAssertEqual(hardware.values[hardware.speaker], 1)
+        XCTAssertEqual(inputs[1].stops, 0)
+        recorder.stop()
+        inputs[1].send(202)
+        inputs[1].output?.finish()
+        var newValues: [Int16] = []
+        for await frame in new { newValues.append(frame[0]) }
+        XCTAssertEqual(newValues, [201, 202])
+        XCTAssertEqual(hardware.values[hardware.speaker], 0)
+    }
+
     func testStopDuringRecoveryDrainsWithoutOpeningAnotherInput() async throws {
         let input = RoutingInputDouble()
         input.finishOnStop = false
