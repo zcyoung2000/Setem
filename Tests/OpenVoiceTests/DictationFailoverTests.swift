@@ -134,6 +134,27 @@ final class DictationFailoverTests: XCTestCase {
         XCTAssertEqual(rig.leased, [.wetype])
     }
 
+    func testInputFailureDoesNotCancelAnActiveProviderFinalAfterItsDeadline() async throws {
+        let rig = FailoverRig()
+        defer { rig.close() }
+        var failure: String?
+        let runner = DictationFailover(pool: rig.pool, sleep: rig.clock.sleep, isSpeech: { _ in true }, captureFailure: { failure })
+        let task = Task { try await runner.run(audio: rig.audio.stream, channel: .wetype, partial: { _ in }) }
+        defer { task.cancel() }
+        try await parityEventually { rig.round(.wetype) != nil }
+        rig.send(101)
+        try await parityEventually { rig.round(.wetype)?.samples == [101] }
+        failure = "麦克风音频回调已停滞"
+        rig.audio.continuation.finish()
+        try await parityEventually { rig.round(.wetype)?.ended == true }
+        rig.clock.advance()
+        await withCheckedContinuation { c in DispatchQueue.main.async { c.resume() } }
+        XCTAssertEqual(rig.leased, [.wetype])
+        rig.round(.wetype)?.resolve(.success("已经录到的完整最终稿。"))
+        let text = try await task.value
+        XCTAssertEqual(text, "已经录到的完整最终稿。")
+    }
+
     func testProductionAppKeepsOneHUDAndInsertsOnlyBackupFinalWithoutChangingSelection() async throws {
         _ = NSApplication.shared
         let suite = "Setem-Failover-" + UUID().uuidString

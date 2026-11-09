@@ -13,7 +13,7 @@ final class PlaybackHardwareDouble: PlaybackHardware {
     var watches = 0
     var subscriptions = 0
     init() {
-        route = [.init(isHeadphones: false, controls: [speaker])]
+        route = [.init(controls: [speaker])]
         values = [speaker: 0, volume: 0.6]
     }
     func outputs() throws -> [PlaybackOutput] { route }
@@ -65,7 +65,7 @@ final class DictationRecorderTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
         let hardware = PlaybackHardwareDouble()
         let silencer = PlaybackSilencer(hardware: hardware)
-        var devices: [String] = [], inputs: [Input] = []
+        var devices: [MicrophoneMode] = [], inputs: [Input] = []
         let recorder = Recorder(defaults: defaults, silencer: silencer) { uid in
             devices.append(uid)
             let input = Input()
@@ -81,7 +81,7 @@ final class DictationRecorderTests: XCTestCase {
         recorder.onLevel = { levels.append($0) }
         let first = try recorder.start()
         defaults.set(true, forKey: Recorder.mutePlaybackKey)
-        defaults.set("chosen-device", forKey: "micUID")
+        defaults.set(MicrophoneMode.airPodsPreferred.rawValue, forKey: MicrophoneMode.key)
         XCTAssertThrowsError(try recorder.start())
         XCTAssertEqual(inputs.count, 1)
         XCTAssertEqual(hardware.values[hardware.speaker], 0)
@@ -102,7 +102,7 @@ final class DictationRecorderTests: XCTestCase {
         recorder.stop()
         for await _ in second {}
         for await _ in third {}
-        XCTAssertEqual(devices, ["", "chosen-device", "chosen-device"])
+        XCTAssertEqual(devices, [.builtIn, .airPodsPreferred, .airPodsPreferred])
         XCTAssertEqual(levels, [0.5, 0.5, 0.5])
     }
 
@@ -145,15 +145,15 @@ final class DictationRecorderTests: XCTestCase {
         }
         let old = try recorder.start()
         let oldFailure = recorder.failureSnapshot
-        hardware.route = [.init(isHeadphones: false, controls: [])]
+        hardware.route = [.init(controls: [])]
         hardware.changed?()
         recorder.stop()
-        hardware.route = [.init(isHeadphones: true, controls: [])]
+        hardware.route = [.init(controls: [hardware.volume])]
         let new = try recorder.start()
         let newFailure = recorder.failureSnapshot
         try await Task.sleep(for: .milliseconds(20))
         XCTAssertEqual(inputs[1].stops, 0)
-        XCTAssertNotNil(oldFailure())
+        XCTAssertNil(oldFailure())
         XCTAssertNil(newFailure())
         recorder.stop()
         for await _ in old {}
@@ -177,7 +177,7 @@ final class DictationRecorderTests: XCTestCase {
     }
 
     @MainActor
-    func testActiveOutputFailureFinishesItsAudioTailAndReportsTheCause() async throws {
+    func testActiveOutputFailureKeepsRecordingAndPreservesExactText() async throws {
         let suite = "OpenVoice-MuteRouteFailure-" + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -186,29 +186,33 @@ final class DictationRecorderTests: XCTestCase {
         let recorder = Recorder(defaults: defaults, silencer: PlaybackSilencer(hardware: hardware)) { _ in input }
         let stream = try recorder.start()
         let failure = recorder.failureSnapshot
-        hardware.route = [.init(isHeadphones: false, controls: [])]
+        hardware.route = [.init(controls: [])]
         hardware.changed?()
         try await Task.sleep(for: .milliseconds(20))
-        XCTAssertEqual(input.stops, 1)
-        XCTAssertNotNil(failure())
+        XCTAssertEqual(input.stops, 0)
+        XCTAssertNil(failure())
+        input.output?.yield([103])
+        recorder.stop()
         XCTAssertEqual(hardware.values[hardware.speaker], 0)
         var frames: [[Int16]] = []
         for await frame in stream { frames.append(frame) }
-        XCTAssertEqual(frames, [[101], [102]])
+        XCTAssertEqual(frames, [[101], [103], [102]])
+        XCTAssertEqual(frames.map { $0[0] == 101 ? "开头" : $0[0] == 103 ? "继续" : "和结尾。" }.joined(), "开头继续和结尾。")
     }
 
-    func testUnsupportedOutputNeverStartsAnUnmutedMicrophone() throws {
+    func testUnsupportedOutputDoesNotPreventMicrophoneCapture() throws {
         let suite = "OpenVoice-MuteUnsupported-" + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set(true, forKey: Recorder.mutePlaybackKey)
         let hardware = PlaybackHardwareDouble(), input = Input()
-        hardware.route = [.init(isHeadphones: false, controls: [])]
+        hardware.route = [.init(controls: [])]
         var starts = 0
         input.starting = { starts += 1 }
         let recorder = Recorder(defaults: defaults, silencer: PlaybackSilencer(hardware: hardware)) { _ in input }
-        XCTAssertThrowsError(try recorder.start())
-        XCTAssertEqual(starts, 0)
+        _ = try recorder.start()
+        XCTAssertEqual(starts, 1)
+        recorder.stop()
         XCTAssertEqual(hardware.watches, 0)
     }
 }
@@ -263,14 +267,14 @@ final class DictationPlaybackMuteTests: XCTestCase {
     func testRepeatedRouteNotificationsKeepOneSubscriptionAndRestorePlayback() throws {
         let hardware = PlaybackHardwareDouble()
         let silencer = PlaybackSilencer(hardware: hardware)
-        let lease = try silencer.acquire()
+        let lease = silencer.acquire()
         let notification = try XCTUnwrap(hardware.changed)
         // Listener installation can itself queue Core Audio route notifications.
         // Processing those notifications must not install another listener.
         for _ in 0..<100 { notification() }
         XCTAssertEqual(hardware.subscriptions, 1)
         XCTAssertEqual(hardware.writes.count, 1)
-        hardware.route = [.init(isHeadphones: true, controls: [])]
+        hardware.route = [.init(controls: [hardware.volume])]
         notification()
         XCTAssertEqual(hardware.values[hardware.speaker], 0)
         lease.finish()
@@ -279,31 +283,26 @@ final class DictationPlaybackMuteTests: XCTestCase {
         XCTAssertEqual(hardware.subscriptions, 1)
     }
 
-    func testHeadphonesSkipMuteButBluetoothOrUSBUnknownTypesDoNot() throws {
-        XCTAssertTrue(PlaybackOutput.headphones(terminalTypes: [kAudioStreamTerminalTypeHeadphones]))
-        XCTAssertFalse(PlaybackOutput.headphones(terminalTypes: [kAudioStreamTerminalTypeSpeaker]))
-        XCTAssertFalse(PlaybackOutput.headphones(terminalTypes: [0]))
-        XCTAssertFalse(PlaybackOutput.headphones(terminalTypes: []))
-        XCTAssertFalse(PlaybackOutput.headphones(terminalTypes: [kAudioStreamTerminalTypeHeadphones, kAudioStreamTerminalTypeSpeaker]))
+    func testHeadphonesAreMutedAndRestoreTheOriginalVolume() throws {
         let hardware = PlaybackHardwareDouble()
-        hardware.route = [.init(isHeadphones: true, controls: [])]
+        hardware.route = [.init(controls: [hardware.volume])]
         let silencer = PlaybackSilencer(hardware: hardware)
-        let lease = try silencer.acquire()
-        XCTAssertTrue(hardware.writes.isEmpty)
+        let lease = silencer.acquire()
+        XCTAssertEqual(hardware.values[hardware.volume], 0)
         lease.finish()
-        XCTAssertTrue(hardware.writes.isEmpty)
+        XCTAssertEqual(hardware.values[hardware.volume], 0.6)
         XCTAssertEqual(hardware.watches, 0)
     }
 
     func testSwitchingBetweenSpeakersAndHeadphonesRestoresEachDevice() throws {
         let hardware = PlaybackHardwareDouble()
         let silencer = PlaybackSilencer(hardware: hardware)
-        let lease = try silencer.acquire()
+        let lease = silencer.acquire()
         XCTAssertEqual(hardware.values[hardware.speaker], 1)
-        hardware.route = [.init(isHeadphones: true, controls: [])]
+        hardware.route = [.init(controls: [hardware.volume])]
         hardware.changed?()
         XCTAssertEqual(hardware.values[hardware.speaker], 0)
-        hardware.route = [.init(isHeadphones: false, controls: [hardware.volume])]
+        hardware.route = [.init(controls: [hardware.volume])]
         hardware.changed?()
         XCTAssertEqual(hardware.values[hardware.volume], 0)
         lease.finish()
@@ -314,7 +313,7 @@ final class DictationPlaybackMuteTests: XCTestCase {
     func testMultipleRecordersCannotUnmuteEachOtherAndShutdownRestoresAll() throws {
         let hardware = PlaybackHardwareDouble()
         let silencer = PlaybackSilencer(hardware: hardware)
-        let first = try silencer.acquire(), second = try silencer.acquire()
+        let first = silencer.acquire(), second = silencer.acquire()
         XCTAssertEqual(hardware.writes.count, 1)
         first.finish()
         first.finish()
@@ -330,26 +329,72 @@ final class DictationPlaybackMuteTests: XCTestCase {
         let hardware = PlaybackHardwareDouble()
         hardware.values[hardware.speaker] = 1
         let silencer = PlaybackSilencer(hardware: hardware)
-        let first = try silencer.acquire()
+        let first = silencer.acquire()
         first.finish()
         XCTAssertTrue(hardware.writes.isEmpty)
-        hardware.route = [.init(isHeadphones: false, controls: [hardware.volume])]
-        let next = try silencer.acquire()
+        hardware.route = [.init(controls: [hardware.volume])]
+        let next = silencer.acquire()
         XCTAssertEqual(hardware.values[hardware.volume], 0)
         hardware.values[hardware.volume] = 0.35 // User adjusted it while dictating.
         next.finish()
         XCTAssertEqual(hardware.values[hardware.volume], 0.35)
     }
 
-    func testUnsupportedOutputFailsBeforeRecordingAndRollsBackChangedChannels() throws {
+    func testDisconnectedHeadsetRestoresByUIDAfterCaptureEndsAndDeviceIDChanges() {
+        let hardware = PlaybackHardwareDouble()
+        hardware.route = [.init(controls: [hardware.volume])]
+        let silencer = PlaybackSilencer(hardware: hardware)
+        let lease = silencer.acquire()
+        XCTAssertEqual(hardware.values[hardware.volume], 0)
+        hardware.values[hardware.volume] = nil
+        hardware.route = [.init(controls: [hardware.speaker])]
+        hardware.changed?()
+        lease.finish()
+        XCTAssertEqual(hardware.values[hardware.speaker], 0)
+        let reconnected = PlaybackControl(device: 99, uid: hardware.volume.uid, element: 1, kind: .volume)
+        hardware.values[reconnected] = 0
+        hardware.route = [.init(controls: [reconnected])]
+        hardware.changed?()
+        XCTAssertEqual(hardware.values[reconnected], 0.6, "Reconnect must restore the endpoint we muted, using its UID")
+        XCTAssertEqual(hardware.watches, 0)
+    }
+
+    func testMuteRetriesAfterTransientHeadsetProfileFailure() {
         let hardware = PlaybackHardwareDouble()
         let silencer = PlaybackSilencer(hardware: hardware)
-        hardware.route = [.init(isHeadphones: false, controls: [])]
-        XCTAssertThrowsError(try silencer.acquire())
+        var warnings = 0
+        hardware.route = [.init(controls: [])]
+        let lease = silencer.acquire { _ in warnings += 1 }
+        XCTAssertEqual(warnings, 1)
+        XCTAssertEqual(hardware.watches, 1)
+        hardware.route = [.init(controls: [hardware.volume])]
+        hardware.changed?()
+        XCTAssertEqual(hardware.values[hardware.volume], 0)
+        hardware.route = [.init(controls: [])]
+        hardware.changed?()
+        XCTAssertEqual(hardware.values[hardware.volume], 0)
+        XCTAssertEqual(warnings, 2)
+        hardware.route = [.init(controls: [hardware.volume])]
+        hardware.changed?()
+        lease.finish()
+        XCTAssertEqual(hardware.values[hardware.volume], 0.6)
         XCTAssertEqual(hardware.watches, 0)
-        hardware.route = [.init(isHeadphones: false, controls: [hardware.speaker, hardware.volume])]
+    }
+
+    func testUnsupportedOutputKeepsObservationAndRollsBackChangedChannels() throws {
+        let hardware = PlaybackHardwareDouble()
+        let silencer = PlaybackSilencer(hardware: hardware)
+        hardware.route = [.init(controls: [])]
+        var failures = 0
+        let first = silencer.acquire { _ in failures += 1 }
+        XCTAssertEqual(failures, 1)
+        XCTAssertEqual(hardware.watches, 1)
+        first.finish()
+        hardware.route = [.init(controls: [hardware.speaker, hardware.volume])]
         hardware.failControl = hardware.volume
-        XCTAssertThrowsError(try silencer.acquire())
+        let second = silencer.acquire { _ in failures += 1 }
+        XCTAssertEqual(failures, 2)
+        second.finish()
         XCTAssertEqual(hardware.values[hardware.speaker], 0)
         XCTAssertEqual(hardware.values[hardware.volume], 0.6)
         XCTAssertEqual(hardware.watches, 0)
@@ -357,10 +402,10 @@ final class DictationPlaybackMuteTests: XCTestCase {
 
     func testSystemAlertSpeakersAreMutedEvenWhenMainOutputIsHeadphones() throws {
         let hardware = PlaybackHardwareDouble()
-        hardware.route = [.init(isHeadphones: true, controls: []),
-                          .init(isHeadphones: false, controls: [hardware.speaker])]
+        hardware.route = [.init(controls: [hardware.volume]),
+                          .init(controls: [hardware.speaker])]
         let silencer = PlaybackSilencer(hardware: hardware)
-        let lease = try silencer.acquire()
+        let lease = silencer.acquire()
         XCTAssertEqual(hardware.values[hardware.speaker], 1)
         lease.finish()
         XCTAssertEqual(hardware.values[hardware.speaker], 0)

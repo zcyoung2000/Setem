@@ -94,7 +94,12 @@ final class DictationFailover {
 
     private func launchNext(reason: String) {
         guard !finished, !cancellation.isCancelled else { cancel(); return }
-        if let failure = captureFailure() { finish(.failure(ASRError(failure))); return }
+        if let failure = captureFailure(), nextCandidate > 0 {
+            // Input loss cannot be repaired by opening another ASR channel. Let
+            // already-running providers finalize the audio they actually received.
+            if tasks.isEmpty { finish(.failure(ASRError(failure))) }
+            return
+        }
         guard nextCandidate < candidates.count else {
             if tasks.isEmpty {
                 finish(.failure(ASRError("暂时无法完成识别，请检查网络后重试")))
@@ -167,7 +172,8 @@ final class DictationFailover {
         sourceEnded = true
         outputs.values.forEach { $0.finish() }
         outputs.removeAll()
-        arm(policy.finalDelay)
+        if captureFailure() == nil { arm(policy.finalDelay) }
+        else { invalidateWatchdog() }
     }
 
     private func arm(_ delay: TimeInterval) {
@@ -190,8 +196,8 @@ final class DictationFailover {
     }
 
     private func win(_ success: Success) {
-        guard !cancellation.isCancelled, captureFailure() == nil else { cancel(); return }
-        success.pool.reuse(success.engine, channel: success.channel)
+        guard !cancellation.isCancelled else { cancel(); return }
+        if captureFailure() == nil { success.pool.reuse(success.engine, channel: success.channel) }
         Self.log.notice("finished segment=\(self.diagnosticID, privacy: .public) channel=\(success.channel.rawValue, privacy: .public) attempts=\(self.nextCandidate)")
         finish(.success(success.text))
     }

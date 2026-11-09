@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 /// One dictation may contain several recordings while earlier recordings await their final text.
 /// All shared state and capture ownership live here, rather than in engine task cleanup handlers.
@@ -139,7 +140,7 @@ final class DictationSession {
 
     func end() {
         guard isRecording else { return }
-        stopRecording()
+        stopRecording(reason: "manual-stop")
         finishOrWait()
     }
 
@@ -152,7 +153,7 @@ final class DictationSession {
         invalidateTimeout()
         let oldTasks = Array(tasks.values)
         tasks = [:]
-        stopRecording()
+        stopRecording(reason: "cancel")
         for task in oldTasks { task.cancel() }
         onCancel(kept, message)
     }
@@ -164,17 +165,23 @@ final class DictationSession {
     }
 
     private func complete(id: Int, generation gen: Int, text: String, error: String?, captureFailed: Bool = false) {
-        guard isActive, generation == gen,
-              transcript.finish(id, text: text, error: error, keepPartial: false) else { return }
+        guard isActive, generation == gen else { return }
+        // Hardware failure is reported alongside the final captured text. The
+        // provider's complete final still supersedes its last partial preview.
+        if captureFailed, !text.isEmpty { _ = transcript.update(id, text: text) }
+        guard transcript.finish(id, text: text, error: error, keepPartial: false) else { return }
         tasks[id] = nil
         // Finishing an older segment must not stop the recorder owned by a newer one.
-        if transcript.finished || (captureFailed && recordingSegment == id) { stopRecording() }
+        if transcript.finished || (captureFailed && recordingSegment == id) {
+            stopRecording(reason: captureFailed ? "input-failed" : "provider-finished")
+        }
         onUpdate(self.text)
         finishOrWait()
     }
 
-    private func stopRecording() {
-        guard recordingSegment != nil else { return }
+    private func stopRecording(reason: String) {
+        guard let segment = recordingSegment else { return }
+        Logger(subsystem: "do.j3.openvoice", category: "CaptureTiming").notice("stop-request segment=\(segment) reason=\(reason, privacy: .public)")
         recordingSegment = nil
         onCaptureChanged(false)
         stopCapture()

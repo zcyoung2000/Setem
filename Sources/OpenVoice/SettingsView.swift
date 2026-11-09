@@ -14,9 +14,8 @@ struct SettingsView: View {
     @AppStorage("sendHotkey") private var sendHotkey = Hotkey.rightControl.rawValue
     @AppStorage("hudStyle") private var hudStyle = HUDStyle.compact.rawValue
     @AppStorage(DictationOutput.removeTrailingPunctuationKey) private var removeTrailingPunctuation = false
-    @AppStorage("micUID") private var micUID = ""
+    @AppStorage(MicrophoneMode.key) private var microphoneMode = MicrophoneMode.builtIn.rawValue
     @AppStorage(Recorder.mutePlaybackKey) private var mutePlayback = false
-    @State private var microphones = Microphone.all()
     @ObservedObject private var offline = OfflineAssets.shared
     @State private var axTrusted = AXIsProcessTrusted()
     @State private var micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
@@ -67,8 +66,6 @@ struct SettingsView: View {
         .onReceive(timer) { _ in
             axTrusted = AXIsProcessTrusted()
             micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
-            let now = Microphone.all()
-            if now != microphones { microphones = now }
         }
         .onDisappear { compare.cancel() }
         .sheet(isPresented: $showCompare) {
@@ -173,17 +170,17 @@ struct SettingsView: View {
                     .toggleStyle(.switch)
                 Toggle("录音时静音电脑声音", isOn: $mutePlayback)
                     .toggleStyle(.switch)
-                Picker("麦克风", selection: $micUID) {
-                    Text("系统默认").tag("")
-                    ForEach(microphones) { Text($0.name).tag($0.id) }
-                    if !micUID.isEmpty, !microphones.contains(where: { $0.id == micUID }) {
-                        Text("已断开（暂用系统默认）").tag(micUID)
+                LabeledContent("麦克风模式") {
+                    Picker("麦克风模式", selection: $microphoneMode) {
+                        ForEach(MicrophoneMode.allCases) { Text($0.title).tag($0.rawValue) }
                     }
+                    .labelsHidden().pickerStyle(.segmented)
+                    .frame(width: 280, alignment: .trailing)
                 }
             } header: {
                 Text("声音与界面")
             } footer: {
-                Text("紧凑使用较小的浮窗与字号，标准提供更宽的预览。识别结果定稿后一次性输入。\n开启去除末尾标点后，仅移除最终输入文本末尾的一个标点，保留句中标点。\n开启后，收音时自动静音外放，系统识别的耳机保持播放；停止收音即恢复原状态。下次录音生效。")
+                Text("紧凑使用较小的浮窗与字号，标准提供更宽的预览。识别结果定稿后一次性输入。\n开启去除末尾标点后，仅移除最终输入文本末尾的一个标点，保留句中标点。\n开启静音后，两种模式都会静音电脑播放（含耳机），停止收音即恢复原状态。\n优先 AirPods 使用实验性耳机连接辅助；不可用时回退内置麦，本轮保持到结束。内置麦需要开盖。模式更改下次录音生效。")
                     .font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }

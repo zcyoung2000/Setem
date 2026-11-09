@@ -11,13 +11,7 @@ struct PlaybackControl: Hashable {
 }
 
 struct PlaybackOutput {
-    let isHeadphones: Bool
     let controls: [PlaybackControl]
-
-    /// A Bluetooth/USB transport alone says nothing about acoustic isolation.
-    static func headphones(terminalTypes: [UInt32]) -> Bool {
-        !terminalTypes.isEmpty && terminalTypes.allSatisfy { $0 == kAudioStreamTerminalTypeHeadphones }
-    }
 }
 
 protocol PlaybackHardware: AnyObject {
@@ -53,20 +47,19 @@ final class PlaybackSilencer {
 
     init(hardware: PlaybackHardware) { self.hardware = hardware }
 
-    func acquire(onFailure: @escaping (Error) -> Void = { _ in }) throws -> PlaybackMuteLease {
-        lock.lock(); defer { lock.unlock() }
+    func acquire(onFailure: @escaping (Error) -> Void = { _ in }) -> PlaybackMuteLease {
+        lock.lock()
         let id = UUID()
         clients[id] = onFailure
-        do {
-            if stopObserving == nil {
-                stopObserving = hardware.observe { [weak self] in self?.routeChanged() }
-            }
-            try reconcile()
-        } catch {
-            clients.removeValue(forKey: id)
-            if clients.isEmpty { reset() }
-            throw error
+        if stopObserving == nil {
+            stopObserving = hardware.observe { [weak self] in self?.routeChanged() }
         }
+        var failure: Error?
+        do { try reconcile() } catch { failure = error }
+        lock.unlock()
+        // Keep the lease and route observation after a transient profile change.
+        // The next hardware notification can apply mute when controls reappear.
+        if let failure { onFailure(failure) }
         return PlaybackMuteLease { [self] in release(id) }
     }
 
@@ -78,15 +71,14 @@ final class PlaybackSilencer {
 
     private func routeChanged() {
         lock.lock()
-        guard !clients.isEmpty else { lock.unlock(); return }
+        guard !clients.isEmpty || !originals.isEmpty else { lock.unlock(); return }
         do {
             try reconcile()
+            stopObservingIfFinished()
             lock.unlock()
         }
         catch {
             let callbacks = Array(clients.values)
-            clients.removeAll()
-            reset()
             lock.unlock()
             // Per-capture callbacks must not execute under the ownership lock.
             callbacks.forEach { $0(error) }
@@ -94,10 +86,18 @@ final class PlaybackSilencer {
     }
 
     private func reconcile() throws {
-        let outputs = try hardware.outputs().filter { !$0.isHeadphones }
-        guard outputs.allSatisfy({ !$0.controls.isEmpty }) else { throw Self.unavailable }
+        let outputs = try hardware.outputs()
         let controls = Set(outputs.flatMap(\.controls))
-        for control in Array(originals.keys) where !controls.contains(control) { restore(control) }
+        // Numeric Core Audio IDs may change after reconnect. Transfer existing
+        // ownership by UID and control identity before considering a new snapshot.
+        for control in controls where originals[control] == nil {
+            if let old = originals.keys.first(where: {
+                $0.uid == control.uid && $0.kind == control.kind && $0.element == control.element
+            }) { originals[control] = originals.removeValue(forKey: old) }
+        }
+        if !clients.isEmpty, outputs.contains(where: { $0.controls.isEmpty }) { throw Self.unavailable }
+        for control in Array(originals.keys) where clients.isEmpty || !controls.contains(control) { restore(control) }
+        guard !clients.isEmpty else { return }
         let before = Set(originals.keys)
         do {
             for control in controls where originals[control] == nil {
@@ -114,18 +114,24 @@ final class PlaybackSilencer {
     }
 
     private func restore(_ control: PlaybackControl) {
-        guard let original = originals.removeValue(forKey: control) else { return }
-        // Don't overwrite a user's subsequent volume/mute adjustment. The backend
-        // also verifies the UID, since Core Audio may recycle numeric device IDs.
-        if let value = try? hardware.value(control), value == control.silentValue {
-            try? hardware.set(original, for: control)
+        guard let original = originals[control], let value = try? hardware.value(control) else { return }
+        // Preserve user adjustments and keep responsibility while a device is
+        // temporarily disconnected. Reconnect resolves it by UID, never old ID.
+        if value == control.silentValue {
+            do { try hardware.set(original, for: control) } catch { return }
         }
+        originals.removeValue(forKey: control)
     }
 
     private func reset() {
+        for control in Array(originals.keys) { restore(control) }
+        stopObservingIfFinished()
+    }
+
+    private func stopObservingIfFinished() {
+        guard clients.isEmpty, originals.isEmpty else { return }
         stopObserving?()
         stopObserving = nil
-        for control in Array(originals.keys) { restore(control) }
     }
 
     func restoreAll() {
@@ -134,7 +140,7 @@ final class PlaybackSilencer {
         reset()
     }
 
-    deinit { restoreAll() }
+    deinit { restoreAll(); stopObserving?() }
 
     static var unavailable: ASRError {
         ASRError("无法静音当前输出设备，请切换输出设备或关闭“录音时静音电脑声音”")
@@ -235,8 +241,7 @@ final class CoreAudioPlaybackHardware: PlaybackHardware {
                 devices.insert(device)
             }
         }
-        // Multi-output devices may contain speakers and headphones. Inspect the
-        // actual subdevices rather than treating the whole route as headphones.
+        // Inspect actual subdevices so every active playback endpoint is muted.
         var leaves: Set<AudioDeviceID> = []
         func expand(_ device: AudioDeviceID, visited: Set<AudioDeviceID>) {
             guard !visited.contains(device) else { return }
@@ -251,17 +256,7 @@ final class CoreAudioPlaybackHardware: PlaybackHardware {
     func outputs() throws -> [PlaybackOutput] {
         try devices().map { device in
             guard let uid = uid(device) else { throw PlaybackSilencer.unavailable }
-            let streams = list(device, address(kAudioDevicePropertyStreams))
-            let terminals: [UInt32] = streams.map { stream in
-                var type: UInt32 = 0
-                _ = read(stream, address(kAudioStreamPropertyTerminalType, scope: kAudioObjectPropertyScopeGlobal), into: &type)
-                return type
-            }
-            let sources = list(device, address(kAudioDevicePropertyDataSource))
-            let headphones = PlaybackOutput.headphones(terminalTypes: terminals)
-                || uid == "BuiltInHeadphoneOutputDevice"
-                || (!sources.isEmpty && sources.allSatisfy { $0 == 0x6864706e || $0 == kAudioStreamTerminalTypeHeadphones })
-            return PlaybackOutput(isHeadphones: headphones, controls: headphones ? [] : controls(device, uid: uid))
+            return PlaybackOutput(controls: controls(device, uid: uid))
         }
     }
 

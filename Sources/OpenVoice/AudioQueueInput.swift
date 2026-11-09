@@ -82,7 +82,10 @@ final class SystemAudioQueueInput: AudioQueueInput {
         }, "麦克风打开失败")
         guard let q else { throw ASRError("麦克风打开失败") }
         queue = q
-        if !microphoneUID.isEmpty, Microphone.all().contains(where: { $0.id == microphoneUID }) {
+        if !microphoneUID.isEmpty {
+            guard Microphone.all().contains(where: { $0.id == microphoneUID }) else {
+                throw ASRError("所选麦克风不可用")
+            }
             let deviceUID = microphoneUID as CFString
             var uid = Unmanaged.passUnretained(deviceUID)
             try withExtendedLifetime(deviceUID) {
