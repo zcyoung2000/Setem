@@ -59,6 +59,40 @@ final class SettingsWindowTests: XCTestCase {
         }
     }
 
+    func testMicrophoneModesReplaceLegacyPickerAndPersistAfterReopening() async throws {
+        _ = NSApplication.shared
+        let suite = "OpenVoice-MicrophoneModes-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("obsolete-device", forKey: "micUID")
+        let window = SettingsWindow(defaults: defaults)
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+        try await settle(window)
+        try press("声音与界面", in: window)
+        try await settle(window)
+        XCTAssertNil(defaults.object(forKey: "micUID"))
+        XCTAssertEqual(MicrophoneMode.current(in: defaults), .builtIn)
+        let root = try XCTUnwrap(window.contentView)
+        let picker = try XCTUnwrap(nativeViews(in: root).compactMap { $0 as? NSSegmentedControl }.first {
+            $0.label(forSegment: 0) == MicrophoneMode.builtIn.title
+        })
+        XCTAssertEqual(picker.segmentCount, 2)
+        XCTAssertTrue(window.makeFirstResponder(picker))
+        try press(MicrophoneMode.airPodsPreferred.title, in: window)
+        try await settle(window)
+        XCTAssertEqual(MicrophoneMode.current(in: defaults), .airPodsPreferred)
+        window.close()
+        let reopened = SettingsWindow(defaults: defaults)
+        defer { reopened.close() }
+        reopened.makeKeyAndOrderFront(nil)
+        try await settle(reopened)
+        try press("声音与界面", in: reopened)
+        try await settle(reopened)
+        XCTAssertEqual(MicrophoneMode.current(in: defaults), .airPodsPreferred)
+        XCTAssertNil(defaults.object(forKey: "micUID"))
+    }
+
     private func nativeViews(in root: NSView) -> [NSView] {
         [root] + root.subviews.flatMap { nativeViews(in: $0) }
     }
@@ -257,12 +291,12 @@ final class SettingsWindowTests: XCTestCase {
 
         XCTAssertFalse(elements(in: window).contains { label($0)?.contains("边说边上屏") == true })
         let style = try XCTUnwrap(nativeViews(in: XCTUnwrap(window.contentView)).compactMap { $0 as? NSSegmentedControl }
-            .first { $0.segmentCount == HUDStyle.allCases.count })
+            .first { $0.segmentCount == HUDStyle.allCases.count && $0.label(forSegment: 0) == HUDStyle.compact.title })
         style.selectedSegment = 1
         _ = style.sendAction(style.action, to: style.target)
         try await settle(window)
         XCTAssertEqual(defaults.string(forKey: "hudStyle"), HUDStyle.standard.rawValue)
-        XCTAssertLessThan(window.frame.height, initialHeight)
+        XCTAssertEqual(window.frame.height - initialHeight, CGFloat(SettingsTab.audio.contentHeight() - SettingsTab.channel.contentHeight()), accuracy: 1)
         XCTAssertEqual(window.frame.maxY, top, accuracy: 1)
 
         try press("识别渠道", in: window)

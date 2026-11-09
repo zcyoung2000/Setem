@@ -3,55 +3,6 @@ import AudioToolbox
 import CoreAudio
 import OSLog
 
-/// CoreAudio 输入设备；UID 存设置里，拔掉后自动回退系统默认
-struct Microphone: Identifiable, Hashable {
-    let id: String
-    let name: String
-    let deviceID: AudioDeviceID
-
-    static var selectedUID: String { UserDefaults.standard.string(forKey: "micUID") ?? "" }
-
-    static func all() -> [Microphone] {
-        var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices,
-                                              mScope: kAudioObjectPropertyScopeGlobal,
-                                              mElement: kAudioObjectPropertyElementMain)
-        var size: UInt32 = 0
-        let system = AudioObjectID(kAudioObjectSystemObject)
-        guard AudioObjectGetPropertyDataSize(system, &addr, 0, nil, &size) == noErr else { return [] }
-        var ids = [AudioDeviceID](repeating: 0, count: Int(size) / MemoryLayout<AudioDeviceID>.size)
-        guard AudioObjectGetPropertyData(system, &addr, 0, nil, &size, &ids) == noErr else { return [] }
-        return ids.compactMap { id in
-            guard inputChannels(id) > 0,
-                  let uid = string(id, kAudioDevicePropertyDeviceUID),
-                  !uid.hasPrefix("CADefaultDeviceAggregate"), !uid.hasPrefix("VPAUAggregateAudioDevice"),
-                  let name = string(id, kAudioObjectPropertyName) else { return nil }
-            return Microphone(id: uid, name: name, deviceID: id)
-        }
-    }
-
-    private static func inputChannels(_ id: AudioDeviceID) -> Int {
-        var addr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreamConfiguration,
-                                              mScope: kAudioDevicePropertyScopeInput,
-                                              mElement: kAudioObjectPropertyElementMain)
-        var size: UInt32 = 0
-        guard AudioObjectGetPropertyDataSize(id, &addr, 0, nil, &size) == noErr, size > 0 else { return 0 }
-        let raw = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment)
-        defer { raw.deallocate() }
-        guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, raw) == noErr else { return 0 }
-        let list = UnsafeMutableAudioBufferListPointer(raw.assumingMemoryBound(to: AudioBufferList.self))
-        return list.reduce(0) { $0 + Int($1.mNumberChannels) }
-    }
-
-    private static func string(_ id: AudioDeviceID, _ selector: AudioObjectPropertySelector) -> String? {
-        var addr = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal,
-                                              mElement: kAudioObjectPropertyElementMain)
-        var value: Unmanaged<CFString>?
-        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
-        guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &value) == noErr else { return nil }
-        return value?.takeRetainedValue() as String?
-    }
-}
-
 /// 任意输入格式 → 16kHz/mono/Int16，按 20ms（320 样本）切帧
 final class FrameConverter {
     static let frame = 320
@@ -100,6 +51,14 @@ protocol RecordingSource: AnyObject {
     var onFailure: ((Error) -> Void)? { get set }
     func start() throws -> AsyncStream<[Int16]>
     func stop()
+    /// Completion follows native queue disposal, including any delayed tail.
+    func stop(completion: @escaping () -> Void)
+    var changesPlaybackRoute: Bool { get }
+}
+
+extension RecordingSource {
+    func stop(completion: @escaping () -> Void) { stop(); completion() }
+    var changesPlaybackRoute: Bool { false }
 }
 
 /// Each recording owns its source. A setting change never replaces live capture
@@ -108,7 +67,7 @@ final class Recorder {
     // Preserve existing users' opt-in when replacing echo processing with muting.
     static let mutePlaybackKey = "suppressPlayback"
     private let defaults: UserDefaults
-    private let makeSource: (String) -> RecordingSource
+    private let makeSource: (MicrophoneMode) -> RecordingSource
     private let silencer: PlaybackSilencer
     private var source: RecordingSource?
     private var muteLease: PlaybackMuteLease?
@@ -126,7 +85,8 @@ final class Recorder {
     }
 
     init(defaults: UserDefaults = .standard, silencer: PlaybackSilencer = .shared,
-         makeSource: @escaping (String) -> RecordingSource = { AudioQueueSource(microphoneUID: $0) }) {
+         makeSource: @escaping (MicrophoneMode) -> RecordingSource = { RoutedRecordingSource(mode: $0) }) {
+        MicrophoneMode.migrate(in: defaults)
         self.defaults = defaults
         self.silencer = silencer
         self.makeSource = makeSource
@@ -134,7 +94,7 @@ final class Recorder {
 
     func start() throws -> AsyncStream<[Int16]> {
         guard source == nil else { throw ASRError("录音已开始") }
-        let input = makeSource(defaults.string(forKey: "micUID") ?? "")
+        let input = makeSource(MicrophoneMode.current(in: defaults))
         input.onLevel = onLevel
         let failure = Failure()
         self.failure = failure
@@ -149,29 +109,37 @@ final class Recorder {
         var lease: PlaybackMuteLease?
         do {
             if defaults.bool(forKey: Self.mutePlaybackKey) {
-                lease = try silencer.acquire(onFailure: reportFailure)
+                // Playback control is independent of microphone/recognition health.
+                // A route's missing mute control must not cut off live speech.
+                lease = silencer.acquire(onFailure: Self.playbackWarning)
             }
             let stream = try input.start()
             source = input
             muteLease = lease
             return stream
         } catch {
-            input.stop()
-            lease?.finish()
+            let changesRoute = input.changesPlaybackRoute
+            input.stop { lease?.finish(afterRouteChange: changesRoute) }
             throw error
         }
+    }
+
+    private static func playbackWarning(_ error: Error) {
+        Logger(subsystem: "do.j3.openvoice", category: "PlaybackMute").notice("mute-warning message=\(error.localizedDescription, privacy: .public)")
     }
 
     func stop() {
         let input = source, lease = muteLease
         source = nil
         muteLease = nil
-        input?.stop()
-        // Audio is restored at the capture boundary, never after ASR finalization.
-        lease?.finish()
+        guard let input else { lease?.finish(); return }
+        let changesRoute = input.changesPlaybackRoute
+        // Keep playback muted through native tail drain and headset shutdown.
+        // Recognition finalization remains independent of playback restoration.
+        input.stop { lease?.finish(afterRouteChange: changesRoute) }
     }
 
-    deinit { source?.stop(); muteLease?.finish() }
+    deinit { stop() }
 
     /// RMS → dBFS，-50dB 以下视为静音，-10dB 封顶
     static func level(_ frame: [Int16]) -> Float {
@@ -196,6 +164,7 @@ final class AudioQueueSource: RecordingSource {
     private var sampleCount = 0
     private var pending = AudioFrameBuffer()
     private var continuation: AsyncStream<[Int16]>.Continuation?
+    private var stoppedCallbacks: [() -> Void] = []
     /// 每 20ms 帧的音量（0...1），在采集队列回调
     var onLevel: ((Float) -> Void)?
     var onFailure: ((Error) -> Void)?
@@ -275,21 +244,37 @@ final class AudioQueueSource: RecordingSource {
         }
     }
 
+    var changesPlaybackRoute: Bool {
+        let transport = input.transportType
+        return transport == kAudioDeviceTransportTypeBluetooth || transport == kAudioDeviceTransportTypeBluetoothLE
+    }
+
+    func stop(completion: @escaping () -> Void) {
+        guard active else { completion(); return }
+        stoppedCallbacks.append(completion)
+        stop()
+    }
+
     private func finish() {
         // All callbacks must finish before the last sub-frame is padded or the
         // stream ends. Wired inputs stop immediately; Bluetooth reaches this after
         // draining, or as a bounded failure fallback.
         do { try input.stop(immediately: true) } catch { onFailure?(error) }
-        callbackQueue.sync {
-            if let tail = pending.flush() { continuation?.yield(tail) }
+        let output = callbackQueue.sync { () -> AsyncStream<[Int16]>.Continuation? in
+            let output = continuation
+            if let tail = pending.flush() { output?.yield(tail) }
             pending = AudioFrameBuffer()
-            continuation?.finish()
             continuation = nil
             Self.log.notice("stopped samples=\(self.sampleCount)")
+            return output
         }
         input.dispose()
         active = false
         drainTask = nil
+        let callbacks = stoppedCallbacks
+        stoppedCallbacks.removeAll()
+        callbacks.forEach { $0() }
+        output?.finish()
     }
 
     deinit { input.dispose() }

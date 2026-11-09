@@ -10,7 +10,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .channel: doubao ? 430 : 330
         case .hotkey: 280
-        case .audio: 320
+        case .audio: 390
         case .permission: 250
         }
     }
@@ -26,6 +26,7 @@ final class SettingsWindow: NSWindow {
     let navigation = SettingsNavigation()
 
     init(defaults: UserDefaults = .standard) {
+        MicrophoneMode.migrate(in: defaults)
         Channel.migrateLegacySelection(in: defaults)
         Hotkey.removeRetiredSettings(in: defaults)
         let channel = Channel.current(in: defaults)
