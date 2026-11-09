@@ -13,6 +13,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var capture = providedCapture ?? DictationCapture(start: { [unowned self] in try self.recorder.start() },
                                                                   stop: { [unowned self] in self.recorder.stop() })
     private let hud: HUD
+    private let headset: HeadsetMicrophone
+    private var screenLocked = false
+    private var screensAsleep = false
+    /// The HUD shows a wait hint while the resident headset link is still coming up.
+    private var connectingHint = false
     private let insertText: (String, Bool) -> Void
     private let defaults: UserDefaults
     private var statusItem: NSStatusItem!
@@ -24,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     init(capture: DictationCapture? = nil, enginePool: DictationEnginePool? = nil, hud: HUD? = nil,
          defaults: UserDefaults = .standard, hotkey: HotkeyMonitor = HotkeyMonitor(),
          replayPool: DictationEnginePool? = nil, failoverPolicy: DictationFailover.Policy? = .automatic,
+         headset: HeadsetMicrophone = .shared,
          insertText: @escaping (String, Bool) -> Void = { TextInserter.insert($0, sendsReturn: $1) }) {
         providedCapture = capture
         recorder = Recorder(defaults: defaults)
@@ -34,6 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         self.replayPool = replayPool ?? DictationEnginePool(factory: DictationSession.makeReplayEngine)
         self.failoverPolicy = failoverPolicy
         self.hud = hud ?? HUD()
+        self.headset = headset
         self.defaults = defaults
         self.insertText = { text, sendsReturn in
             let output = DictationOutput.textForInsertion(text, defaults: defaults)
@@ -58,6 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         model.onCaptureChanged = { [weak self] in self?.captureChanged($0) }
         model.onUpdate = { [weak self] text in
             guard let self else { return }
+            self.connectingHint = false
             self.hud.update(text)
         }
         model.onFinish = { [weak self] result in self?.finishDictation(result) }
@@ -89,6 +97,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         hotkey.start()
+        observeHeadsetMode()
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             self?.handleSettingsShortcut(event) == true ? nil : event
         }
@@ -144,6 +153,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        headset.setEnabled(false)
         recorder.stop()
         PlaybackSilencer.shared.restoreAll()
     }
@@ -157,6 +167,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func captureChanged(_ recording: Bool) {
         self.recording = recording
         if !recording {
+            clearConnectingHint()
             tapRecording = false
             if dictation.isActive {
                 hud.showThinking()
@@ -174,7 +185,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         tapRecording = isTap
-        hud.show(dictation.text, listening: true, clickToStop: isTap)
+        connectingHint = dictation.text.isEmpty && MicrophonePreference.current(in: defaults).headset
+            && headset.currentState == .connecting
+        hud.show(connectingHint ? "耳机麦克风连接中，请稍候…" : dictation.text, listening: true, clickToStop: isTap)
+    }
+
+    private func clearConnectingHint() {
+        guard connectingHint else { return }
+        connectingHint = false
+        hud.update(dictation.text)
+    }
+
+    // MARK: - 耳机模式
+
+    /// Settings and the menu share one preference; the resident input follows it,
+    /// and is released while the screen is locked or asleep.
+    private func observeHeadsetMode() {
+        headset.onStateChange = { [weak self] state in
+            if state == .live { self?.clearConnectingHint() }
+        }
+        syncHeadsetMode()
+        NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: defaults,
+                                               queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.syncHeadsetMode() }
+        }
+        let workspace = NSWorkspace.shared.notificationCenter
+        let distributed = DistributedNotificationCenter.default()
+        let observers: [(NotificationCenter, Notification.Name, (AppDelegate) -> Void)] = [
+            (workspace, NSWorkspace.screensDidSleepNotification, { $0.screensAsleep = true }),
+            (workspace, NSWorkspace.screensDidWakeNotification, { $0.screensAsleep = false }),
+            (distributed, Notification.Name("com.apple.screenIsLocked"), { $0.screenLocked = true }),
+            (distributed, Notification.Name("com.apple.screenIsUnlocked"), { $0.screenLocked = false }),
+        ]
+        for (center, name, change) in observers {
+            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    change(self)
+                    self.headset.setSuspended(self.screenLocked || self.screensAsleep)
+                }
+            }
+        }
+    }
+
+    private func syncHeadsetMode() {
+        headset.setEnabled(MicrophonePreference.current(in: defaults).headset)
+    }
+
+    @objc func toggleHeadsetMode() {
+        defaults.set(!MicrophonePreference.current(in: defaults).headset, forKey: MicrophonePreference.headsetKey)
+        syncHeadsetMode()
     }
 
     private func finishDictation(_ result: DictationSession.Result) {
@@ -237,6 +297,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             item.representedObject = c.rawValue
             item.state = c == Channel.current ? .on : .off
             menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        let headsetOn = MicrophonePreference.current(in: defaults).headset
+        let headsetItem = NSMenuItem(title: "耳机模式", action: #selector(toggleHeadsetMode), keyEquivalent: "")
+        headsetItem.target = self
+        headsetItem.state = headsetOn ? .on : .off
+        menu.addItem(headsetItem)
+        if headsetOn {
+            let status: String = switch headset.currentState {
+            case .live: "耳机麦克风已就绪"
+            case .connecting: "耳机麦克风连接中…"
+            case .waiting: "未连接蓝牙耳机，使用电脑麦克风"
+            case .off: "耳机麦克风已暂停"
+            }
+            let statusItem = NSMenuItem(title: status, action: nil, keyEquivalent: "")
+            statusItem.isEnabled = false
+            statusItem.indentationLevel = 1
+            menu.addItem(statusItem)
         }
         menu.addItem(.separator())
         if !AXIsProcessTrusted() {

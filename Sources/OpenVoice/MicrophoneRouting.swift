@@ -3,22 +3,35 @@ import CoreAudio
 import IOKit
 import Foundation
 
-// Only these two policies participate in input selection. A mode change applies
-// to the next recording; a live capture never upgrades from built-in to AirPods.
-enum MicrophoneMode: String, CaseIterable, Identifiable {
-    case builtIn, airPodsPreferred
-    static let key = "microphoneMode"
-    var id: String { rawValue }
-    var title: String { self == .builtIn ? "MacBook 内置麦" : "优先使用 AirPods" }
+/// Headset mode keeps the Bluetooth headset input open between recordings, the way
+/// a call does, so its profile switch never cuts speech. Otherwise every recording
+/// opens the chosen computer microphone. Changes apply to the next recording.
+struct MicrophonePreference: Equatable {
+    static let headsetKey = "headsetMode"
+    static let computerKey = "computerMicrophoneUID"
+    var headset: Bool
+    /// Empty selects the MacBook built-in microphone.
+    var computerUID: String
+
     static func current(in defaults: UserDefaults) -> Self {
-        Self(rawValue: defaults.string(forKey: key) ?? "") ?? .builtIn
+        Self(headset: defaults.bool(forKey: headsetKey), computerUID: defaults.string(forKey: computerKey) ?? "")
     }
+
+    /// The retired two-way mode and the older device picker map onto headset mode
+    /// or a wired computer microphone; neither may silently follow the system default.
     static func migrate(in defaults: UserDefaults, microphones: [Microphone]? = nil) {
-        if defaults.object(forKey: key) == nil {
-            let old = defaults.string(forKey: "micUID") ?? ""
-            let mode: Self = !old.isEmpty && (microphones ?? Microphone.all()).contains { $0.id == old && $0.isAirPods } ? .airPodsPreferred : .builtIn
-            defaults.set(mode.rawValue, forKey: key)
+        let mode = defaults.string(forKey: "microphoneMode")
+        let old = defaults.string(forKey: "micUID") ?? ""
+        if defaults.object(forKey: headsetKey) == nil, mode != nil || !old.isEmpty {
+            let device = old.isEmpty ? nil : (microphones ?? Microphone.all()).first { $0.id == old }
+            // An explicit retired mode wins over the older device picker.
+            defaults.set(mode.map { $0 == "airPodsPreferred" } ?? (device?.isHeadset == true), forKey: headsetKey)
+            if let device, device.isComputerInput, !device.isBuiltIn,
+               defaults.object(forKey: computerKey) == nil {
+                defaults.set(device.id, forKey: computerKey)
+            }
         }
+        defaults.removeObject(forKey: "microphoneMode")
         defaults.removeObject(forKey: "micUID")
     }
 }
@@ -33,9 +46,27 @@ struct Microphone: Identifiable, Hashable {
     var manufacturer: String = ""
     var model: String = ""
     var isBuiltIn: Bool { transport == kAudioDeviceTransportTypeBuiltIn }
+    /// Bluetooth inputs switch the headset into its call profile when opened.
+    var isHeadset: Bool { transport == kAudioDeviceTransportTypeBluetooth || transport == kAudioDeviceTransportTypeBluetoothLE }
     var isAirPods: Bool {
-        let wireless = transport == kAudioDeviceTransportTypeBluetooth || transport == kAudioDeviceTransportTypeBluetoothLE
-        return wireless && (name.localizedCaseInsensitiveContains("AirPods") || model.localizedCaseInsensitiveContains("AirPods") || manufacturer.localizedCaseInsensitiveContains("Apple"))
+        isHeadset && (name.localizedCaseInsensitiveContains("AirPods") || model.localizedCaseInsensitiveContains("AirPods") || manufacturer.localizedCaseInsensitiveContains("Apple"))
+    }
+    /// Built-in, USB, Thunderbolt, display and similar physical inputs. Virtual
+    /// loopback/meeting devices and aggregates are never offered as a microphone.
+    var isComputerInput: Bool {
+        !isHeadset && ![kAudioDeviceTransportTypeVirtual, kAudioDeviceTransportTypeAggregate,
+                        kAudioDeviceTransportTypeAutoAggregate].contains(transport)
+    }
+
+    /// AirPods first, then any other Bluetooth headset, in a stable order.
+    static func headset(in microphones: [Microphone]) -> Microphone? {
+        microphones.first { $0.isAirPods } ?? microphones.first { $0.isHeadset }
+    }
+
+    /// The chosen computer microphone, or built-in when it is unplugged.
+    static func computer(_ uid: String, in microphones: [Microphone]) -> Microphone? {
+        (uid.isEmpty ? nil : microphones.first { $0.id == uid && $0.isComputerInput })
+            ?? microphones.first { $0.isBuiltIn }
     }
 
     static func all() -> [Microphone] {

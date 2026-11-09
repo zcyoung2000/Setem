@@ -9,6 +9,7 @@ private final class RoutingInputDouble: RecordingSource {
     var startError: Error?
     var stops = 0
     var finishOnStop = true
+    var changesPlaybackRoute = false
     func start() throws -> AsyncStream<[Int16]> {
         if let startError { throw startError }
         let (stream, output) = AsyncStream<[Int16]>.makeStream()
@@ -28,11 +29,11 @@ final class DictationRoutingTests: XCTestCase {
         var available = [builtIn, airPods]
         var opened: [String] = []
         var inputs: [RoutingInputDouble] = []
-        var holds = 0, releases = 0
-        let source = RoutedRecordingSource(mode: .airPodsPreferred, microphones: { available }, makeSource: { uid in
+        let source = RoutedRecordingSource(preference: .headsetMode, microphones: { available }, makeSource: { microphone in
+            let uid = microphone.id
             opened.append(uid)
             let input = RoutingInputDouble(); inputs.append(input); return input
-        }, holdHeadset: { _ in holds += 1; return AudioRouteLease { releases += 1 } }, automaticallyMonitor: false)
+        }, automaticallyMonitor: false)
         let suite = "OpenVoice-RoutingSession-" + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -61,8 +62,6 @@ final class DictationRoutingTests: XCTestCase {
         session.end()
         try await parityEventually { results.count == 1 }
         XCTAssertEqual(results, [.init(text: "开头和结尾。", error: nil, sendsReturn: false)])
-        XCTAssertEqual(holds, 1)
-        XCTAssertEqual(releases, 1)
         source.checkHealth()
         XCTAssertEqual(opened.count, 2)
     }
@@ -70,7 +69,8 @@ final class DictationRoutingTests: XCTestCase {
     func testNoCallbackRecoveryIsBoundedAndKeepsAlreadyCapturedFrames() async throws {
         var clock: TimeInterval = 0
         var inputs: [RoutingInputDouble] = []
-        let source = RoutedRecordingSource(mode: .builtIn, microphones: { [self.builtIn, self.airPods] }, makeSource: { uid in
+        let source = RoutedRecordingSource(preference: .computer, microphones: { [self.builtIn, self.airPods] }, makeSource: { microphone in
+            let uid = microphone.id
             XCTAssertEqual(uid, "builtin")
             let input = RoutingInputDouble(); inputs.append(input); return input
         }, now: { clock }, automaticallyMonitor: false)
@@ -99,7 +99,7 @@ final class DictationRoutingTests: XCTestCase {
         var clock: TimeInterval = 0
         let input = RoutingInputDouble()
         var opens = 0, failure: String?
-        let source = RoutedRecordingSource(mode: .builtIn, microphones: { [self.builtIn] }, makeSource: { _ in
+        let source = RoutedRecordingSource(preference: .computer, microphones: { [self.builtIn] }, makeSource: { _ in
             opens += 1; return input
         }, now: { clock }, automaticallyMonitor: false)
         source.onFailure = { failure = $0.localizedDescription }
@@ -121,17 +121,18 @@ final class DictationRoutingTests: XCTestCase {
 
     func testStartupFailureFallsBackAndNeverUsesSystemDefault() async throws {
         var opened: [String] = []
-        let source = RoutedRecordingSource(mode: .airPodsPreferred, microphones: { [self.builtIn, self.airPods] }, makeSource: { uid in
+        let source = RoutedRecordingSource(preference: .headsetMode, microphones: { [self.builtIn, self.airPods] }, makeSource: { microphone in
+            let uid = microphone.id
             opened.append(uid)
             let input = RoutingInputDouble()
             if uid == "airpods" { input.startError = ASRError("打不开耳机") }
             return input
-        }, holdHeadset: { _ in nil }, automaticallyMonitor: false)
+        }, automaticallyMonitor: false)
         let stream = try source.start()
         source.stop()
         for await _ in stream {}
         XCTAssertEqual(opened, ["airpods", "airpods", "builtin"])
-        let fixed = RoutedRecordingSource(mode: .builtIn, microphones: { [self.airPods] }, makeSource: { _ in
+        let fixed = RoutedRecordingSource(preference: .computer, microphones: { [self.airPods] }, makeSource: { _ in
             XCTFail("Unavailable built-in input must never follow the system default"); return RoutingInputDouble()
         }, automaticallyMonitor: false)
         XCTAssertThrowsError(try fixed.start())
@@ -145,8 +146,8 @@ final class DictationRoutingTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let recorder = Recorder(defaults: defaults) { _ in
-            RoutedRecordingSource(mode: .airPodsPreferred, microphones: { [microphone] },
-                                  makeSource: { _ in input }, holdHeadset: { _ in nil }, automaticallyMonitor: false)
+            RoutedRecordingSource(preference: .headsetMode, microphones: { [microphone] },
+                                  makeSource: { _ in input }, automaticallyMonitor: false)
         }
         let stream = try recorder.start()
         let frames = Task { var values: [Int16] = []; for await frame in stream { values.append(frame[0]) }; return values }
@@ -158,38 +159,30 @@ final class DictationRoutingTests: XCTestCase {
         XCTAssertEqual(values, [101, 102], "Key-up releases Recorder ownership before Bluetooth tail delivery")
     }
 
-    func testPlaybackStaysMutedUntilNativeTailAndHeadsetOutputHaveClosed() async throws {
+    func testPlaybackStaysMutedUntilTheBluetoothTailHasBeenDelivered() async throws {
         let input = RoutingInputDouble()
         input.finishOnStop = false
+        input.changesPlaybackRoute = true
         let hardware = PlaybackHardwareDouble()
         let microphone = airPods
-        var outputClosed = false
         let suite = "OpenVoice-RoutingMuteTail-" + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set(true, forKey: Recorder.mutePlaybackKey)
         let recorder = Recorder(defaults: defaults, silencer: PlaybackSilencer(hardware: hardware)) { _ in
-            RoutedRecordingSource(mode: .airPodsPreferred, microphones: { [microphone] },
-                makeSource: { _ in input }, holdHeadset: { _ in
-                    AudioRouteLease {
-                        XCTAssertEqual(hardware.values[hardware.speaker], 1,
-                                       "Headset output must close while playback is still muted")
-                        outputClosed = true
-                    }
-                }, automaticallyMonitor: false)
+            RoutedRecordingSource(preference: .headsetMode, microphones: { [microphone] },
+                                  makeSource: { _ in input }, automaticallyMonitor: false)
         }
         let stream = try recorder.start()
         let frames = Task { var values: [Int16] = []; for await frame in stream { values.append(frame[0]) }; return values }
         input.send(101)
         recorder.stop()
-        XCTAssertEqual(hardware.values[hardware.speaker], 1, "Key-up must not unmute the still-open headset")
-        XCTAssertFalse(outputClosed)
+        XCTAssertEqual(hardware.values[hardware.speaker], 1, "Key-up must not unmute while the headset tail is pending")
         input.send(102)
         input.output?.finish()
         let values = await frames.value
         XCTAssertEqual(values, [101, 102])
-        XCTAssertTrue(outputClosed)
-        XCTAssertEqual(hardware.values[hardware.speaker], 0)
+        try await parityEventually { hardware.values[hardware.speaker] == 0 }
     }
 
     func testOldTailCompletionCannotUnmuteOrStopTheNextRecording() async throws {
@@ -204,8 +197,8 @@ final class DictationRoutingTests: XCTestCase {
             let input = RoutingInputDouble()
             input.finishOnStop = false
             inputs.append(input)
-            return RoutedRecordingSource(mode: .airPodsPreferred, microphones: { [microphone] },
-                makeSource: { _ in input }, holdHeadset: { _ in nil }, automaticallyMonitor: false)
+            return RoutedRecordingSource(preference: .headsetMode, microphones: { [microphone] },
+                makeSource: { _ in input }, automaticallyMonitor: false)
         }
         let old = try recorder.start()
         inputs[0].send(101)
@@ -232,7 +225,7 @@ final class DictationRoutingTests: XCTestCase {
         let input = RoutingInputDouble()
         input.finishOnStop = false
         var opens = 0
-        let source = RoutedRecordingSource(mode: .builtIn, microphones: { [self.builtIn] }, makeSource: { _ in
+        let source = RoutedRecordingSource(preference: .computer, microphones: { [self.builtIn] }, makeSource: { _ in
             opens += 1; return input
         }, automaticallyMonitor: false)
         let stream = try source.start()
@@ -253,7 +246,7 @@ final class DictationRoutingTests: XCTestCase {
     func testFirstCallbackTimeoutReopensTheSameDeviceOnlyOnce() async throws {
         var clock: TimeInterval = 0
         var inputs: [RoutingInputDouble] = []
-        let source = RoutedRecordingSource(mode: .builtIn, microphones: { [self.builtIn] }, makeSource: { _ in
+        let source = RoutedRecordingSource(preference: .computer, microphones: { [self.builtIn] }, makeSource: { _ in
             let input = RoutingInputDouble(); inputs.append(input); return input
         }, now: { clock }, automaticallyMonitor: false)
         let stream = try source.start()
@@ -271,7 +264,7 @@ final class DictationRoutingTests: XCTestCase {
     func testExhaustedInputRecoveryStillCommitsCapturedFinalWithCloudFailoverEnabled() async throws {
         var clock: TimeInterval = 0
         var inputs: [RoutingInputDouble] = []
-        let source = RoutedRecordingSource(mode: .builtIn, microphones: { [self.builtIn] }, makeSource: { _ in
+        let source = RoutedRecordingSource(preference: .computer, microphones: { [self.builtIn] }, makeSource: { _ in
             let input = RoutingInputDouble(); inputs.append(input); return input
         }, now: { clock }, automaticallyMonitor: false)
         let suite = "OpenVoice-RoutingExhausted-" + UUID().uuidString
@@ -301,21 +294,59 @@ final class DictationRoutingTests: XCTestCase {
         XCTAssertEqual(results.first?.sendsReturn, false)
     }
 
-    func testModeSelectionAndMigrationRetireLegacyDeviceSelection() throws {
-        let name = "OpenVoice-Routing-" + UUID().uuidString
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
-        defer { defaults.removePersistentDomain(forName: name) }
-        XCTAssertEqual(MicrophoneMode.current(in: defaults), .builtIn)
-        defaults.set("airpods", forKey: "micUID")
-        MicrophoneMode.migrate(in: defaults, microphones: [builtIn, airPods])
-        XCTAssertEqual(MicrophoneMode.current(in: defaults), .airPodsPreferred)
-        XCTAssertNil(defaults.object(forKey: "micUID"))
-        defaults.set(MicrophoneMode.builtIn.rawValue, forKey: MicrophoneMode.key)
-        defaults.set("airpods", forKey: "micUID")
-        MicrophoneMode.migrate(in: defaults, microphones: [builtIn, airPods])
-        XCTAssertEqual(MicrophoneMode.current(in: defaults), .builtIn)
-        XCTAssertNil(defaults.object(forKey: "micUID"))
+    func testPreferenceMigrationRetiresLegacyModeAndDeviceSelection() throws {
+        let usb = Microphone(id: "usb", name: "USB 麦克风", deviceID: 3, transport: kAudioDeviceTransportTypeUSB)
+        let cases: [(mode: String?, uid: String?, headset: Bool, computer: String)] = [
+            (nil, nil, false, ""),
+            ("airPodsPreferred", nil, true, ""),
+            ("builtIn", "airpods", false, ""),
+            (nil, "airpods", true, ""),
+            ("builtIn", nil, false, ""),
+            (nil, "usb", false, "usb"),
+            (nil, "unplugged", false, ""),
+        ]
+        for item in cases {
+            let name = "OpenVoice-Routing-" + UUID().uuidString
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+            defer { defaults.removePersistentDomain(forName: name) }
+            defaults.set(item.mode, forKey: "microphoneMode")
+            defaults.set(item.uid, forKey: "micUID")
+            MicrophonePreference.migrate(in: defaults, microphones: [builtIn, airPods, usb])
+            XCTAssertEqual(MicrophonePreference.current(in: defaults), .init(headset: item.headset, computerUID: item.computer), "\(item)")
+            XCTAssertNil(defaults.object(forKey: "microphoneMode"))
+            XCTAssertNil(defaults.object(forKey: "micUID"))
+            // A later explicit choice is never overwritten by a second migration.
+            defaults.set(!item.headset, forKey: MicrophonePreference.headsetKey)
+            defaults.set("airPodsPreferred", forKey: "microphoneMode")
+            MicrophonePreference.migrate(in: defaults, microphones: [builtIn, airPods, usb])
+            XCTAssertEqual(MicrophonePreference.current(in: defaults).headset, !item.headset)
+        }
     }
+
+    func testComputerMicrophoneUsesExternalInputAndNeverAHeadsetOrVirtualDevice() throws {
+        let usb = Microphone(id: "usb", name: "USB 麦克风", deviceID: 3, transport: kAudioDeviceTransportTypeUSB)
+        let loopback = Microphone(id: "loop", name: "Loopback", deviceID: 4, transport: kAudioDeviceTransportTypeVirtual)
+        XCTAssertEqual(Microphone.computer("usb", in: [builtIn, airPods, usb])?.id, "usb")
+        XCTAssertEqual(Microphone.computer("usb", in: [builtIn, airPods])?.id, "builtin", "Unplugged falls back to built-in")
+        XCTAssertEqual(Microphone.computer("airpods", in: [builtIn, airPods])?.id, "builtin")
+        XCTAssertEqual(Microphone.computer("loop", in: [builtIn, loopback])?.id, "builtin")
+        XCTAssertNil(Microphone.computer("", in: [airPods, usb]), "Never silently follows another input")
+        XCTAssertFalse(loopback.isComputerInput)
+        XCTAssertTrue(usb.isComputerInput)
+        var opened: [String] = []
+        let source = RoutedRecordingSource(preference: .init(headset: false, computerUID: "usb"),
+                                           microphones: { [self.airPods, self.builtIn, usb] }, makeSource: {
+            opened.append($0.id); return RoutingInputDouble()
+        }, automaticallyMonitor: false)
+        _ = try source.start()
+        source.stop()
+        XCTAssertEqual(opened, ["usb"])
+    }
+}
+
+extension MicrophonePreference {
+    static let computer = Self(headset: false, computerUID: "")
+    static let headsetMode = Self(headset: true, computerUID: "")
 }
 
 @MainActor

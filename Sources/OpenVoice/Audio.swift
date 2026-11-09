@@ -67,7 +67,7 @@ final class Recorder {
     // Preserve existing users' opt-in when replacing echo processing with muting.
     static let mutePlaybackKey = "suppressPlayback"
     private let defaults: UserDefaults
-    private let makeSource: (MicrophoneMode) -> RecordingSource
+    private let makeSource: (MicrophonePreference) -> RecordingSource
     private let silencer: PlaybackSilencer
     private var source: RecordingSource?
     private var muteLease: PlaybackMuteLease?
@@ -85,8 +85,8 @@ final class Recorder {
     }
 
     init(defaults: UserDefaults = .standard, silencer: PlaybackSilencer = .shared,
-         makeSource: @escaping (MicrophoneMode) -> RecordingSource = { RoutedRecordingSource(mode: $0) }) {
-        MicrophoneMode.migrate(in: defaults)
+         makeSource: @escaping (MicrophonePreference) -> RecordingSource = { RoutedRecordingSource(preference: $0) }) {
+        MicrophonePreference.migrate(in: defaults)
         self.defaults = defaults
         self.silencer = silencer
         self.makeSource = makeSource
@@ -94,7 +94,7 @@ final class Recorder {
 
     func start() throws -> AsyncStream<[Int16]> {
         guard source == nil else { throw ASRError("录音已开始") }
-        let input = makeSource(MicrophoneMode.current(in: defaults))
+        let input = makeSource(MicrophonePreference.current(in: defaults))
         input.onLevel = onLevel
         let failure = Failure()
         self.failure = failure

@@ -67,7 +67,7 @@ final class DictationRecorderTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
         let hardware = PlaybackHardwareDouble()
         let silencer = PlaybackSilencer(hardware: hardware)
-        var devices: [MicrophoneMode] = [], inputs: [Input] = []
+        var devices: [MicrophonePreference] = [], inputs: [Input] = []
         let recorder = Recorder(defaults: defaults, silencer: silencer) { uid in
             devices.append(uid)
             let input = Input()
@@ -83,7 +83,7 @@ final class DictationRecorderTests: XCTestCase {
         recorder.onLevel = { levels.append($0) }
         let first = try recorder.start()
         defaults.set(true, forKey: Recorder.mutePlaybackKey)
-        defaults.set(MicrophoneMode.airPodsPreferred.rawValue, forKey: MicrophoneMode.key)
+        defaults.set(true, forKey: MicrophonePreference.headsetKey)
         XCTAssertThrowsError(try recorder.start())
         XCTAssertEqual(inputs.count, 1)
         XCTAssertEqual(hardware.values[hardware.speaker], 0)
@@ -104,7 +104,7 @@ final class DictationRecorderTests: XCTestCase {
         recorder.stop()
         for await _ in second {}
         for await _ in third {}
-        XCTAssertEqual(devices, [.builtIn, .airPodsPreferred, .airPodsPreferred])
+        XCTAssertEqual(devices, [.computer, .headsetMode, .headsetMode])
         XCTAssertEqual(levels, [0.5, 0.5, 0.5])
     }
 

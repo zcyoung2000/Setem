@@ -8,15 +8,13 @@ import OSLog
 final class RoutedRecordingSource: RecordingSource, @unchecked Sendable {
     private static let log = Logger(subsystem: "do.j3.openvoice", category: "InputRouting")
     private let queue = DispatchQueue(label: "openvoice.input-routing")
-    private let mode: MicrophoneMode
+    private let preference: MicrophonePreference
     private let microphones: () -> [Microphone]
-    private let makeSource: (String) -> RecordingSource
-    private let holdHeadset: (Microphone) -> AudioRouteLease?
+    private let makeSource: (Microphone) -> RecordingSource
     private let now: () -> TimeInterval
     private let automaticallyMonitor: Bool
     private var timer: DispatchSourceTimer?
     private var input: RecordingSource?
-    private var headset: AudioRouteLease?
     private var pump: Task<Void, Never>?
     private var output: AsyncStream<[Int16]>.Continuation?
     private var microphone: Microphone?
@@ -36,15 +34,13 @@ final class RoutedRecordingSource: RecordingSource, @unchecked Sendable {
     var onLevel: ((Float) -> Void)?
     var onFailure: ((Error) -> Void)?
 
-    init(mode: MicrophoneMode, microphones: @escaping () -> [Microphone] = Microphone.all,
-         makeSource: @escaping (String) -> RecordingSource = { AudioQueueSource(microphoneUID: $0) },
-         holdHeadset: @escaping (Microphone) -> AudioRouteLease? = { AirPodsAudioHold.acquire($0) },
+    init(preference: MicrophonePreference, microphones: @escaping () -> [Microphone] = Microphone.all,
+         makeSource: @escaping (Microphone) -> RecordingSource = RoutedRecordingSource.source,
          now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
          automaticallyMonitor: Bool = true) {
-        self.mode = mode
+        self.preference = preference
         self.microphones = microphones
         self.makeSource = makeSource
-        self.holdHeadset = holdHeadset
         self.now = now
         self.automaticallyMonitor = automaticallyMonitor
     }
@@ -75,26 +71,29 @@ final class RoutedRecordingSource: RecordingSource, @unchecked Sendable {
         }
     }
 
+    /// The resident headset input when headset mode holds it open; a headset that
+    /// is not resident yet (just connected) is opened for this recording only.
+    static func source(_ microphone: Microphone) -> RecordingSource {
+        (microphone.isHeadset ? HeadsetMicrophone.shared.tap(for: microphone) : nil)
+            ?? AudioQueueSource(microphoneUID: microphone.id)
+    }
+
     private func openNext() throws {
         let available = microphones()
-        let builtIn = available.first { $0.isBuiltIn }
         var candidates: [Microphone] = []
-        if mode == .airPodsPreferred, !fellBack {
-            if let preferred = available.first(where: { $0.id == microphone?.id && $0.isAirPods })
-                ?? available.first(where: { $0.isAirPods }) { candidates.append(preferred) }
+        if preference.headset, !fellBack {
+            if let preferred = available.first(where: { $0.id == microphone?.id && $0.isHeadset })
+                ?? Microphone.headset(in: available) { candidates.append(preferred) }
         }
-        if let builtIn { candidates.append(builtIn) }
+        // An unplugged external microphone falls back to built-in, never the system default.
+        if let computer = Microphone.computer(preference.computerUID, in: available) { candidates.append(computer) }
         var lastError: Error = recoveryError ?? ASRError("MacBook 内置麦克风不可用，请开盖后重试")
         for candidate in candidates {
-            guard attempts[candidate.id, default: 0] < 2 else { continue }
-            usedHeadset = usedHeadset || candidate.isAirPods
-            // One helper lease covers both startup attempts on this device.
-            let lease = candidate.isAirPods ? holdHeadset(candidate) : nil
             while attempts[candidate.id, default: 0] < 2 {
                 attempts[candidate.id, default: 0] += 1
                 token = UUID()
                 let ownToken = token
-                let next = makeSource(candidate.id)
+                let next = makeSource(candidate)
                 next.onFailure = { [weak self] error in
                     self?.queue.async { [weak self] in
                         guard let self, self.token == ownToken else { return }
@@ -104,13 +103,14 @@ final class RoutedRecordingSource: RecordingSource, @unchecked Sendable {
                 do {
                     let stream = try next.start()
                     input = next
-                    headset = lease
+                    // Only an on-demand headset switches the playback profile back at the end.
+                    usedHeadset = usedHeadset || next.changesPlaybackRoute
                     microphone = candidate
-                    fellBack = candidate.isBuiltIn
+                    fellBack = !candidate.isHeadset
                     recovering = false
                     openedAt = now()
                     lastFrameAt = nil
-                    Self.log.notice("opened mode=\(self.mode.rawValue, privacy: .public) builtIn=\(candidate.isBuiltIn) input=\(candidate.id, privacy: .private(mask: .hash)) attempt=\(self.attempts[candidate.id, default: 0])")
+                    Self.log.notice("opened headsetMode=\(self.preference.headset) headset=\(candidate.isHeadset) builtIn=\(candidate.isBuiltIn) input=\(candidate.id, privacy: .private(mask: .hash)) attempt=\(self.attempts[candidate.id, default: 0])")
                     // Keep the logical source alive until its final native tail
                     // is forwarded, even after Recorder releases it at key-up.
                     pump = Task { [self] in
@@ -134,7 +134,6 @@ final class RoutedRecordingSource: RecordingSource, @unchecked Sendable {
                     next.stop()
                 }
             }
-            lease?.finish()
         }
         throw lastError
     }
@@ -152,8 +151,6 @@ final class RoutedRecordingSource: RecordingSource, @unchecked Sendable {
     private func ended(_ ownToken: UUID) {
         guard running, token == ownToken else { return }
         input = nil
-        headset?.finish()
-        headset = nil
         pump = nil
         if stopping {
             let error = samples > 0 && !nonzero ? ASRError("未收到有效音频，请检查麦克风后重试") : nil
@@ -202,8 +199,6 @@ final class RoutedRecordingSource: RecordingSource, @unchecked Sendable {
         recovering = false
         timer?.cancel()
         timer = nil
-        headset?.finish()
-        headset = nil
         input = nil
         if let error { onFailure?(error) }
         Self.log.notice("ended samples=\(self.samples) nonzero=\(self.nonzero) failed=\(error != nil)")
@@ -218,7 +213,6 @@ final class RoutedRecordingSource: RecordingSource, @unchecked Sendable {
         timer?.cancel()
         input?.onFailure = nil
         input?.stop()
-        headset?.finish()
         output?.finish()
         pump?.cancel()
     }

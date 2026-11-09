@@ -59,29 +59,31 @@ final class SettingsWindowTests: XCTestCase {
         }
     }
 
-    func testMicrophoneModesReplaceLegacyPickerAndPersistAfterReopening() async throws {
+    func testHeadsetSwitchAndComputerMicrophoneReplaceModePickerAndPersist() async throws {
         _ = NSApplication.shared
         let suite = "OpenVoice-MicrophoneModes-" + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        defaults.set("obsolete-device", forKey: "micUID")
+        defaults.set("builtIn", forKey: "microphoneMode")
+        defaults.set("unplugged-usb", forKey: MicrophonePreference.computerKey)
         let window = SettingsWindow(defaults: defaults)
         window.makeKeyAndOrderFront(nil)
         defer { window.close() }
         try await settle(window)
         try press("声音与界面", in: window)
         try await settle(window)
-        XCTAssertNil(defaults.object(forKey: "micUID"))
-        XCTAssertEqual(MicrophoneMode.current(in: defaults), .builtIn)
+        XCTAssertNil(defaults.object(forKey: "microphoneMode"))
+        XCTAssertEqual(MicrophonePreference.current(in: defaults), .init(headset: false, computerUID: "unplugged-usb"))
         let root = try XCTUnwrap(window.contentView)
-        let picker = try XCTUnwrap(nativeViews(in: root).compactMap { $0 as? NSSegmentedControl }.first {
-            $0.label(forSegment: 0) == MicrophoneMode.builtIn.title
+        XCTAssertFalse(nativeViews(in: root).contains { $0 is NSSegmentedControl && ($0 as? NSSegmentedControl)?.label(forSegment: 0) == "MacBook 内置麦" })
+        let picker = try XCTUnwrap(elements(in: window).first {
+            role($0) == "AXPopUpButton" && label($0) == "电脑麦克风"
         })
-        XCTAssertEqual(picker.segmentCount, 2)
-        XCTAssertTrue(window.makeFirstResponder(picker))
-        try press(MicrophoneMode.airPodsPreferred.title, in: window)
+        XCTAssertEqual(attribute("accessibilityValue", of: picker) as? String, "已选外接麦克风（未连接）",
+                       "An unplugged choice stays visible, not silently replaced")
+        try press("耳机模式", in: window)
         try await settle(window)
-        XCTAssertEqual(MicrophoneMode.current(in: defaults), .airPodsPreferred)
+        XCTAssertTrue(MicrophonePreference.current(in: defaults).headset)
         window.close()
         let reopened = SettingsWindow(defaults: defaults)
         defer { reopened.close() }
@@ -89,8 +91,7 @@ final class SettingsWindowTests: XCTestCase {
         try await settle(reopened)
         try press("声音与界面", in: reopened)
         try await settle(reopened)
-        XCTAssertEqual(MicrophoneMode.current(in: defaults), .airPodsPreferred)
-        XCTAssertNil(defaults.object(forKey: "micUID"))
+        XCTAssertEqual(MicrophonePreference.current(in: defaults), .init(headset: true, computerUID: "unplugged-usb"))
     }
 
     private func nativeViews(in root: NSView) -> [NSView] {

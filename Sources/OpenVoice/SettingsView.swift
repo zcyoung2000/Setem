@@ -14,7 +14,9 @@ struct SettingsView: View {
     @AppStorage("sendHotkey") private var sendHotkey = Hotkey.rightControl.rawValue
     @AppStorage("hudStyle") private var hudStyle = HUDStyle.compact.rawValue
     @AppStorage(DictationOutput.removeTrailingPunctuationKey) private var removeTrailingPunctuation = false
-    @AppStorage(MicrophoneMode.key) private var microphoneMode = MicrophoneMode.builtIn.rawValue
+    @AppStorage(MicrophonePreference.headsetKey) private var headsetMode = false
+    @AppStorage(MicrophonePreference.computerKey) private var computerMicrophone = ""
+    @State private var computerMicrophones = SettingsView.computerInputs()
     @AppStorage(Recorder.mutePlaybackKey) private var mutePlayback = false
     @ObservedObject private var offline = OfflineAssets.shared
     @State private var axTrusted = AXIsProcessTrusted()
@@ -66,6 +68,7 @@ struct SettingsView: View {
         .onReceive(timer) { _ in
             axTrusted = AXIsProcessTrusted()
             micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+            if navigation.tab == .audio { computerMicrophones = Self.computerInputs() }
         }
         .onDisappear { compare.cancel() }
         .sheet(isPresented: $showCompare) {
@@ -170,17 +173,23 @@ struct SettingsView: View {
                     .toggleStyle(.switch)
                 Toggle("录音时静音电脑声音", isOn: $mutePlayback)
                     .toggleStyle(.switch)
-                LabeledContent("麦克风模式") {
-                    Picker("麦克风模式", selection: $microphoneMode) {
-                        ForEach(MicrophoneMode.allCases) { Text($0.title).tag($0.rawValue) }
+                Toggle("耳机模式", isOn: $headsetMode)
+                    .toggleStyle(.switch)
+                LabeledContent("电脑麦克风") {
+                    Picker("电脑麦克风", selection: $computerMicrophone) {
+                        Text("MacBook 内置麦").tag("")
+                        ForEach(computerMicrophones.filter { !$0.isBuiltIn }) { Text($0.name).tag($0.id) }
+                        if !computerMicrophone.isEmpty, !computerMicrophones.contains(where: { $0.id == computerMicrophone }) {
+                            Text("已选外接麦克风（未连接）").tag(computerMicrophone)
+                        }
                     }
-                    .labelsHidden().pickerStyle(.segmented)
-                    .frame(width: 280, alignment: .trailing)
+                    .labelsHidden()
+                    .frame(width: 220, alignment: .trailing)
                 }
             } header: {
                 Text("声音与界面")
             } footer: {
-                Text("紧凑使用较小的浮窗与字号，标准提供更宽的预览。识别结果定稿后一次性输入。\n开启去除末尾标点后，仅移除最终输入文本末尾的一个标点，保留句中标点。\n开启静音后，两种模式都会静音电脑播放（含耳机），停止收音即恢复原状态。\n优先 AirPods 使用实验性耳机连接辅助；不可用时回退内置麦，本轮保持到结束。内置麦需要开盖。模式更改下次录音生效。")
+                Text("紧凑使用较小的浮窗与字号，标准提供更宽的预览。识别结果定稿后一次性输入。\n开启去除末尾标点后，仅移除最终输入文本末尾的一个标点，保留句中标点。\n开启静音后会静音电脑播放（含耳机），停止收音即恢复原状态。\n耳机模式像通话一样常开蓝牙耳机麦克风，避免每次录音切换耳机模式丢掉开头和结尾；开启期间耳机播放为通话音质，锁屏时自动释放。耳机不可用时使用电脑麦克风。\n电脑麦克风可选内置麦或 USB 等外接麦克风，外接麦克风拔出时使用内置麦（需要开盖）。更改下次录音生效，菜单栏也可切换耳机模式。")
                     .font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -217,6 +226,9 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
     }
+
+    /// Physical inputs that are not headsets; virtual and aggregate devices are excluded.
+    static func computerInputs() -> [Microphone] { Microphone.all().filter(\.isComputerInput) }
 
     private var authorizedStatus: some View {
         Label("已授权", systemImage: "checkmark").foregroundStyle(.green)
