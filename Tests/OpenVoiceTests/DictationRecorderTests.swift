@@ -223,7 +223,7 @@ final class DictationPlaybackMuteTests: XCTestCase {
     func testHeadsetRestorationWaitsForPlaybackProfileAndItsVolumeSynchronization() {
         let hardware = PlaybackHardwareDouble()
         var clock: TimeInterval = 0
-        hardware.rates = [hardware.speaker.uid: 48000]
+        hardware.rates = [hardware.speaker.uid: 24000]
         let silencer = PlaybackSilencer(hardware: hardware, now: { clock }, automaticallyRestore: false)
         let lease = silencer.acquire()
         hardware.rates[hardware.speaker.uid] = 24000
@@ -250,7 +250,7 @@ final class DictationPlaybackMuteTests: XCTestCase {
     func testNewCaptureCancelsOldRestorationAndKeepsOriginalPlaybackProfile() {
         let hardware = PlaybackHardwareDouble()
         var clock: TimeInterval = 0
-        hardware.rates = [hardware.speaker.uid: 48000]
+        hardware.rates = [hardware.speaker.uid: 24000]
         let silencer = PlaybackSilencer(hardware: hardware, now: { clock }, automaticallyRestore: false)
         let first = silencer.acquire()
         hardware.rates[hardware.speaker.uid] = 24000
@@ -275,7 +275,7 @@ final class DictationPlaybackMuteTests: XCTestCase {
         let hardware = PlaybackHardwareDouble()
         var clock: TimeInterval = 0
         hardware.route = [.init(controls: [hardware.volume])]
-        hardware.rates = [hardware.volume.uid: 48000]
+        hardware.rates = [hardware.volume.uid: 24000]
         let silencer = PlaybackSilencer(hardware: hardware, now: { clock }, automaticallyRestore: false)
         let lease = silencer.acquire()
         hardware.rates[hardware.volume.uid] = 24000 // Another app continues using the mic.

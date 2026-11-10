@@ -85,9 +85,7 @@ final class DictationSession {
     func start(channel: Channel, sendsReturn: Bool = false) throws -> Bool {
         guard !isRecording else { return false }
         // Failure to open the next recording must leave the pending session and timer intact.
-        var audio = try startCapture()
-        let debugName = DebugCapture.enabled ? DebugCapture.makeName() : nil
-        if let debugName { audio = DebugCapture.tee(audio, name: debugName) }
+        let captured = try startCapture()
         let captureFailure = self.captureFailure()
         invalidateTimeout()
         if !isActive {
@@ -102,6 +100,11 @@ final class DictationSession {
         let gen = generation
         recordingSegment = id
         onCaptureChanged(true)
+        // Observe the hardware stream independently of the provider. Input failure
+        // must start the final deadline even when a provider never returns.
+        var audio = observingEnd(captured, id: id, generation: gen)
+        let debugName = DebugCapture.enabled ? DebugCapture.makeName() : nil
+        if let debugName { audio = DebugCapture.tee(audio, name: debugName) }
         // Never share a mutable WebSocket/client between concurrent recordings.
         let channel = self.channel
         let pool = enginePool
@@ -145,6 +148,29 @@ final class DictationSession {
         guard isRecording else { return }
         stopRecording(reason: "manual-stop")
         finishOrWait()
+    }
+
+    func suspend() {
+        sendOnFinish = false
+        stopRecording(reason: "suspended")
+        finishOrWait()
+    }
+
+    private func observingEnd(_ audio: AsyncStream<[Int16]>, id: Int, generation gen: Int) -> AsyncStream<[Int16]> {
+        AsyncStream { output in
+            let pump = Task { [weak self] in
+                for await frame in audio {
+                    guard !Task.isCancelled else { break }
+                    output.yield(frame)
+                }
+                if !Task.isCancelled, let self, self.isActive, self.generation == gen, self.recordingSegment == id {
+                    self.stopRecording(reason: "input-ended")
+                    self.finishOrWait()
+                }
+                output.finish()
+            }
+            output.onTermination = { _ in pump.cancel() }
+        }
     }
 
     /// Invalidate ownership before cancelling: vendors may complete or throw much later.

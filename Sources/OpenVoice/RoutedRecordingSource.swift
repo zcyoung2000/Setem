@@ -10,7 +10,7 @@ final class RoutedRecordingSource: RecordingSource, @unchecked Sendable {
     private let queue = DispatchQueue(label: "openvoice.input-routing")
     private let preference: MicrophonePreference
     private let microphones: () -> [Microphone]
-    private let makeSource: (Microphone) -> RecordingSource
+    private let makeSource: (Microphone) throws -> RecordingSource
     private let now: () -> TimeInterval
     private let automaticallyMonitor: Bool
     private var timer: DispatchSourceTimer?
@@ -21,6 +21,7 @@ final class RoutedRecordingSource: RecordingSource, @unchecked Sendable {
     private var token = UUID()
     private var attempts: [String: Int] = [:]
     private var recoveryError: Error?
+    private var terminalError: Error?
     private var running = false
     private var stopping = false
     private var recovering = false
@@ -30,12 +31,13 @@ final class RoutedRecordingSource: RecordingSource, @unchecked Sendable {
     private var samples = 0
     private var nonzero = false
     private var usedHeadset = false
+    private let routeLock = NSLock()
     private var stoppedCallbacks: [() -> Void] = []
     var onLevel: ((Float) -> Void)?
     var onFailure: ((Error) -> Void)?
 
     init(preference: MicrophonePreference, microphones: @escaping () -> [Microphone] = Microphone.all,
-         makeSource: @escaping (Microphone) -> RecordingSource = RoutedRecordingSource.source,
+         makeSource: @escaping (Microphone) throws -> RecordingSource = RoutedRecordingSource.source,
          now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
          automaticallyMonitor: Bool = true) {
         self.preference = preference
@@ -54,10 +56,11 @@ final class RoutedRecordingSource: RecordingSource, @unchecked Sendable {
             stopping = false
             attempts = [:]
             recoveryError = nil
+            terminalError = nil
             samples = 0
             nonzero = false
             fellBack = false
-            usedHeadset = false
+            routeLock.withLock { usedHeadset = false }
             do { try openNext() }
             catch { finish(error: nil); throw error }
             if automaticallyMonitor {
@@ -71,11 +74,14 @@ final class RoutedRecordingSource: RecordingSource, @unchecked Sendable {
         }
     }
 
-    /// The resident headset input when headset mode holds it open; a headset that
-    /// is not resident yet (just connected) is opened for this recording only.
-    static func source(_ microphone: Microphone) -> RecordingSource {
-        (microphone.isHeadset ? HeadsetMicrophone.shared.tap(for: microphone) : nil)
-            ?? AudioQueueSource(microphoneUID: microphone.id)
+    /// One owner for Bluetooth input. Opening a second, on-demand queue here would
+    /// bypass the resident input's recovery backoff and readiness checks.
+    static func source(_ microphone: Microphone) throws -> RecordingSource {
+        if microphone.isHeadset {
+            guard let tap = HeadsetMicrophone.shared.tap(for: microphone) else { throw ASRError("耳机麦克风暂不可用") }
+            return tap
+        }
+        return AudioQueueSource(microphoneUID: microphone.id)
     }
 
     private func openNext() throws {
@@ -93,18 +99,23 @@ final class RoutedRecordingSource: RecordingSource, @unchecked Sendable {
                 attempts[candidate.id, default: 0] += 1
                 token = UUID()
                 let ownToken = token
-                let next = makeSource(candidate)
+                let next: RecordingSource
+                do { next = try makeSource(candidate) }
+                catch { lastError = error; continue }
                 next.onFailure = { [weak self] error in
                     self?.queue.async { [weak self] in
                         guard let self, self.token == ownToken else { return }
-                        self.recover(error)
+                        if error is RecordingSuspended {
+                            guard self.running, !self.stopping else { return }
+                            self.terminalError = error
+                            self.stopInput()
+                        } else { self.recover(error) }
                     }
                 }
                 do {
                     let stream = try next.start()
                     input = next
-                    // Only an on-demand headset switches the playback profile back at the end.
-                    usedHeadset = usedHeadset || next.changesPlaybackRoute
+                    routeLock.withLock { usedHeadset = usedHeadset || next.changesPlaybackRoute }
                     microphone = candidate
                     fellBack = !candidate.isHeadset
                     recovering = false
@@ -150,10 +161,11 @@ final class RoutedRecordingSource: RecordingSource, @unchecked Sendable {
 
     private func ended(_ ownToken: UUID) {
         guard running, token == ownToken else { return }
+        if let input { routeLock.withLock { usedHeadset = usedHeadset || input.changesPlaybackRoute } }
         input = nil
         pump = nil
         if stopping {
-            let error = samples > 0 && !nonzero ? ASRError("未收到有效音频，请检查麦克风后重试") : nil
+            let error = terminalError ?? (samples > 0 && !nonzero ? ASRError("未收到有效音频，请检查麦克风后重试") : nil)
             finish(error: error)
             return
         }
@@ -177,7 +189,7 @@ final class RoutedRecordingSource: RecordingSource, @unchecked Sendable {
         }
     }
 
-    var changesPlaybackRoute: Bool { queue.sync { usedHeadset } }
+    var changesPlaybackRoute: Bool { routeLock.withLock { usedHeadset } }
 
     func stop() { stop(completion: {}) }
 
@@ -185,12 +197,16 @@ final class RoutedRecordingSource: RecordingSource, @unchecked Sendable {
         queue.sync {
             guard running else { completion(); return }
             stoppedCallbacks.append(completion)
-            guard !stopping else { return }
-            stopping = true
-            timer?.cancel()
-            timer = nil
-            input?.stop()
+            stopInput()
         }
+    }
+
+    private func stopInput() {
+        guard !stopping else { return }
+        stopping = true
+        timer?.cancel()
+        timer = nil
+        input?.stop()
     }
 
     private func finish(error: Error?) {

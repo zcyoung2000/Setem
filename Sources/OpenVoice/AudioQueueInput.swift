@@ -18,7 +18,6 @@ protocol AudioQueueInput: AnyObject {
 final class SystemAudioQueueInput: AudioQueueInput {
     private var queue: AudioQueueRef?
     private var callbackQueue: DispatchQueue?
-    private var followsDefaultInput = true
     // Accessed only on callbackQueue, including the transition to draining.
     private var acceptingBuffers = false
 
@@ -42,13 +41,6 @@ final class SystemAudioQueueInput: AudioQueueInput {
                 AudioObjectGetPropertyData(system, &address, UInt32(MemoryLayout.size(ofValue: uid)), &uid, &size, &device)
             }
         }
-        // A queue following the system default can report an empty/default UID
-        // instead of a concrete device. Resolve the current default input in HAL.
-        if device == kAudioObjectUnknown, followsDefaultInput {
-            address.mSelector = kAudioHardwarePropertyDefaultInputDevice
-            size = UInt32(MemoryLayout.size(ofValue: device))
-            guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &device) == noErr else { return nil }
-        }
         guard device != kAudioObjectUnknown else { return nil }
         address.mSelector = kAudioDevicePropertyTransportType
         var transport: UInt32 = 0
@@ -64,8 +56,8 @@ final class SystemAudioQueueInput: AudioQueueInput {
     func open(microphoneUID: String, callbackQueue: DispatchQueue,
               receive: @escaping (UnsafeBufferPointer<Int16>) -> Void,
               failed: @escaping (Error) -> Void) throws {
+        guard !microphoneUID.isEmpty else { throw ASRError("必须指定麦克风") }
         self.callbackQueue = callbackQueue
-        followsDefaultInput = true
         var format = AudioStreamBasicDescription(
             mSampleRate: 16000, mFormatID: kAudioFormatLinearPCM,
             mFormatFlags: kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked,
@@ -82,7 +74,7 @@ final class SystemAudioQueueInput: AudioQueueInput {
         }, "麦克风打开失败")
         guard let q else { throw ASRError("麦克风打开失败") }
         queue = q
-        if !microphoneUID.isEmpty {
+        do {
             guard Microphone.all().contains(where: { $0.id == microphoneUID }) else {
                 throw ASRError("所选麦克风不可用")
             }
@@ -92,7 +84,6 @@ final class SystemAudioQueueInput: AudioQueueInput {
                 try check(AudioQueueSetProperty(q, kAudioQueueProperty_CurrentDevice, &uid,
                                                 UInt32(MemoryLayout.size(ofValue: uid))), "麦克风选择失败")
             }
-            followsDefaultInput = false
         }
         for _ in 0..<4 {
             var buffer: AudioQueueBufferRef?

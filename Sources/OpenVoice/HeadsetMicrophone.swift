@@ -33,7 +33,9 @@ final class HeadsetMicrophone: @unchecked Sendable {
     private var taps: [ObjectIdentifier: ResidentTap] = [:]
     private var openedAt: TimeInterval = 0
     private var lastCallbackAt: TimeInterval?
-    private var lastSoundAt: TimeInterval?
+    private var zeroSince: TimeInterval?
+    private var zeroFrames = 0
+    private var failedDevice: String?
     private var failures = 0
     private var retryAt: TimeInterval = 0
     private var timer: DispatchSourceTimer?
@@ -65,6 +67,7 @@ final class HeadsetMicrophone: @unchecked Sendable {
             enabled = on
             failures = 0
             retryAt = 0
+            failedDevice = nil
             Self.log.notice("headset-mode enabled=\(on)")
             reconcile()
         }
@@ -77,13 +80,17 @@ final class HeadsetMicrophone: @unchecked Sendable {
             suspended = on
             failures = 0
             retryAt = 0
+            if on { close(error: RecordingSuspended()) }
             reconcile()
         }
     }
 
     /// A tap on the resident input, or nil when it is not open on this headset.
     func tap(for microphone: Microphone) -> RecordingSource? {
-        queue.sync { input != nil && device?.id == microphone.id ? ResidentTap(owner: self) : nil }
+        queue.sync {
+            guard !suspended, input != nil, device?.id == microphone.id, failedDevice != microphone.id else { return nil }
+            return ResidentTap(owner: self, generation: generation)
+        }
     }
 
     /// Explicit entry points let regressions exercise exact ordering.
@@ -98,14 +105,15 @@ final class HeadsetMicrophone: @unchecked Sendable {
         if let device, input != nil {
             if wanted?.id == device.id { return }
             let present = available.contains { $0.id == device.id }
-            // Leaving headset mode or locking drains live recordings first.
+            // A preference change applies after live recordings finish. Suspension
+            // is handled above and must never leave an input open behind the lock.
             if present, !taps.isEmpty { return }
             close(error: present ? nil : ASRError("耳机已断开"))
         }
         // Device notifications start the input; polling only runs with a headset present.
         updateMonitoring(listen: enabled && !suspended, poll: wanted != nil || input != nil)
         guard let wanted else {
-            setState(enabled ? .waiting : .off)
+            setState(enabled && !suspended ? .waiting : .off)
             return
         }
         guard now() >= retryAt else { return }
@@ -119,7 +127,9 @@ final class HeadsetMicrophone: @unchecked Sendable {
         pending = AudioFrameBuffer()
         recent = FIFOBuffer()
         lastCallbackAt = nil
-        lastSoundAt = nil
+        zeroSince = nil
+        zeroFrames = 0
+        if failedDevice != microphone.id { failedDevice = nil }
         do {
             try input.open(microphoneUID: microphone.id, callbackQueue: nativeQueue, receive: { [weak self] samples in
                 let copy = Array(samples)
@@ -149,8 +159,19 @@ final class HeadsetMicrophone: @unchecked Sendable {
         device = nil
         try? input?.stop(immediately: true)
         input?.dispose()
+        if let tail = pending.flush() {
+            for tap in taps.values { tap.receive(tail, sound: tail.contains { $0 != 0 }) }
+        }
         // Recordings fall back through RoutedRecordingSource with their frames kept.
-        for tap in Array(taps.values) { end(tap, error: error ?? ASRError("耳机麦克风已关闭")) }
+        recent = FIFOBuffer()
+        pending = AudioFrameBuffer()
+        zeroSince = nil
+        zeroFrames = 0
+        for tap in Array(taps.values) {
+            tap.markRouteChanged()
+            end(tap, error: error ?? (tap.stopping ? nil : ASRError("耳机麦克风已关闭")))
+        }
+        setState(enabled && !suspended ? .waiting : .off)
         Self.log.notice("closed failed=\(error != nil)")
     }
 
@@ -161,6 +182,7 @@ final class HeadsetMicrophone: @unchecked Sendable {
 
     private func failed(_ error: Error, generation own: Int) {
         guard own == generation, input != nil else { return }
+        failedDevice = device?.id
         delayRetry()
         Self.log.notice("input-failed reason=\(error.localizedDescription, privacy: .public)")
         close(error: error)
@@ -173,12 +195,15 @@ final class HeadsetMicrophone: @unchecked Sendable {
             // Real zeros still arrive as callbacks; only missing callbacks are a stall.
             let quiet = time - (lastCallbackAt ?? openedAt)
             if quiet >= (lastCallbackAt == nil ? 4 : 2) {
-                delayRetry()
                 Self.log.notice("stalled ms=\(Int(quiet * 1000))")
-                close(error: ASRError("耳机麦克风音频回调已停滞"))
-            } else if state == .live, time - (lastSoundAt ?? openedAt) >= 1.5 {
-                // The headset link dropped (e.g. taken by a phone) but the device remains.
-                setState(.connecting)
+                failed(ASRError("耳机麦克风音频回调已停滞"), generation: generation)
+                return
+            } else if let zeroSince, time - zeroSince >= 8, zeroFrames >= 400 {
+                // Eight seconds of exact digital zeros during capture are not
+                // useful microphone input. Quiet nonzero samples and short gaps
+                // reset this counter; idle headsets are never reopened for silence.
+                failed(ASRError("耳机持续未提供有效音频"), generation: generation)
+                return
             }
         }
         reconcile()
@@ -197,10 +222,19 @@ final class HeadsetMicrophone: @unchecked Sendable {
                     failures = 0
                     setState(.live)
                 }
-                lastSoundAt = time
+                failedDevice = nil
             }
-            recent.append(frame)
-            while recent.count > lookback { _ = recent.popFirst() }
+            if sound || taps.isEmpty { zeroSince = nil; zeroFrames = 0 }
+            else {
+                if zeroSince == nil { zeroSince = time }
+                zeroFrames += 1
+            }
+            // Look-back contains only audio not yet assigned to a recording.
+            // Replaying frames already delivered to an earlier tap duplicates words.
+            if taps.isEmpty {
+                recent.append(frame)
+                while recent.count > lookback { _ = recent.popFirst() }
+            }
             for tap in taps.values { tap.receive(frame, sound: sound) }
         }
     }
@@ -244,12 +278,16 @@ final class HeadsetMicrophone: @unchecked Sendable {
 
     fileprivate func attach(_ tap: ResidentTap) throws -> AsyncStream<[Int16]> {
         try queue.sync {
-            guard input != nil, tap.output == nil, !tap.ended else { throw ASRError("耳机麦克风未就绪") }
+            guard !suspended, input != nil, tap.generation == generation, failedDevice != device?.id,
+                  tap.output == nil, !tap.ended else { throw ASRError("耳机麦克风未就绪") }
+            // A new recording takes over the remaining tail. Existing active taps
+            // may still share live audio; a stopped tap must not also receive it.
+            for old in Array(taps.values) where old.stopping { end(old, error: nil) }
+            if taps.isEmpty { zeroSince = nil; zeroFrames = 0 }
             let (stream, output) = AsyncStream<[Int16]>.makeStream()
             tap.output = output
             // Speech that began just before the key press is already buffered.
-            var lookback = recent
-            while let frame = lookback.popFirst() { tap.receive(frame, sound: frame.contains { $0 != 0 }) }
+            while let frame = recent.popFirst() { tap.receive(frame, sound: frame.contains { $0 != 0 }) }
             taps[ObjectIdentifier(tap)] = tap
             return stream
         }
@@ -264,7 +302,12 @@ final class HeadsetMicrophone: @unchecked Sendable {
             // Bluetooth delivers the last spoken audio after key-up.
             after(tail) { [weak self] in
                 guard let self else { return }
-                self.end(tap, error: nil)
+                guard self.taps[ObjectIdentifier(tap)] === tap else { return }
+                // Dispose the input before EOF when this is the final tap and the
+                // user has disabled headset mode. Playback waits for that change.
+                if self.taps.count == 1, !self.enabled || self.suspended {
+                    self.close(error: nil)
+                } else { self.end(tap, error: nil) }
                 if self.taps.isEmpty { self.reconcile() }
             }
         }
@@ -289,12 +332,14 @@ final class HeadsetMicrophone: @unchecked Sendable {
         callbacks.forEach { $0() }
         output?.finish()
     }
+
 }
 
 /// One recording's view of the resident headset input.
 // Fields other than the callbacks are confined to the owner's queue.
 private final class ResidentTap: RecordingSource, @unchecked Sendable {
     let owner: HeadsetMicrophone
+    let generation: Int
     var onLevel: ((Float) -> Void)?
     var onFailure: ((Error) -> Void)?
     var output: AsyncStream<[Int16]>.Continuation?
@@ -306,8 +351,13 @@ private final class ResidentTap: RecordingSource, @unchecked Sendable {
     var levels: [Int] = []
     var peakDb = -120
     private var run = 0, heard = false
+    private let routeLock = NSLock()
+    private var routeChanged = false
 
-    init(owner: HeadsetMicrophone) { self.owner = owner }
+    init(owner: HeadsetMicrophone, generation: Int) { self.owner = owner; self.generation = generation }
+
+    var changesPlaybackRoute: Bool { routeLock.withLock { routeChanged } }
+    func markRouteChanged() { routeLock.withLock { routeChanged = true } }
 
     func start() throws -> AsyncStream<[Int16]> { try owner.attach(self) }
     func stop() { stop(completion: {}) }

@@ -58,6 +58,7 @@ final class PlaybackSilencer {
         let id = UUID()
         let deadline: TimeInterval
         var stableSince: TimeInterval?
+        var lastRates: [String: Float64]?
     }
     private var restoration: Restoration?
     private var restoreWork: DispatchWorkItem?
@@ -95,9 +96,9 @@ final class PlaybackSilencer {
         guard clients.removeValue(forKey: id) != nil else { return }
         guard clients.isEmpty else { return }
         if afterRouteChange, !originals.isEmpty, !playbackRates.isEmpty {
-            // macOS can defer HFP -> playback reconfiguration by about 2 s.
-            // Wait for the pre-recording profile plus 250 ms of stability, with
-            // a 3 s bound if another application keeps the headset mic open.
+            // A resident microphone starts in its call profile. If it closed,
+            // wait for playback to leave that profile, then stay stable 250 ms.
+            // Another app can keep its mic open, so this wait is bounded at 3 s.
             restoration = Restoration(deadline: now() + 3)
             Self.log.notice("restore-wait reason=headset-profile")
             checkRestoration()
@@ -189,7 +190,8 @@ final class PlaybackSilencer {
         do {
             try reconcile()
             let current = hardware.sampleRates()
-            stable = playbackRates.allSatisfy { current[$0.key] == $0.value }
+            if current != pending.lastRates { pending.stableSince = nil; pending.lastRates = current }
+            stable = !current.isEmpty && current != playbackRates
         } catch { /* A changing profile can temporarily hide its controls. */ }
         if stable {
             if pending.stableSince == nil { pending.stableSince = time }

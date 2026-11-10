@@ -138,7 +138,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard !defaults.bool(forKey: "didPromptAccessibility") else { return }
         // Existing installations have already been offered permission. An update must
         // not repeat the system prompt when the stored authorization is still denied.
-        let configured = ["hotkey", "tapShortcut", "sendHotkey", "channel", "micUID"]
+        let configured = ["hotkey", "tapShortcut", "sendHotkey", "channel", MicrophonePreference.headsetKey, MicrophonePreference.computerKey]
             .contains { defaults.object(forKey: $0) != nil }
         defaults.set(true, forKey: "didPromptAccessibility")
         guard !configured, !AXIsProcessTrusted() else { return }
@@ -159,7 +159,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func primeRecording() {
-        guard !recording, !HotkeyMonitor.paused else { return }
+        guard !recording, !HotkeyMonitor.paused, !screenLocked, !screensAsleep else { return }
         try? capture.arm()
         enginePool.prewarm(dictation.isActive ? dictation.channel : Channel.current(in: defaults))
     }
@@ -177,7 +177,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func begin(isTap: Bool = false, sendOnFinish: Bool = false) {
-        guard !recording else { return }
+        guard !recording, !screenLocked, !screensAsleep else { return }
         do {
             guard try dictation.start(channel: Channel.current(in: defaults), sendsReturn: sendOnFinish) else { return }
         } catch {
@@ -222,10 +222,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     change(self)
-                    self.headset.setSuspended(self.screenLocked || self.screensAsleep)
+                    self.updateScreenSuspension()
                 }
             }
         }
+    }
+
+    func updateScreenSuspension(locked: Bool? = nil, asleep: Bool? = nil) {
+        if let locked { screenLocked = locked }
+        if let asleep { screensAsleep = asleep }
+        let suspended = screenLocked || screensAsleep
+        if suspended {
+            dictation.suspend()
+            capture.disarm()
+        }
+        headset.setSuspended(suspended)
     }
 
     private func syncHeadsetMode() {

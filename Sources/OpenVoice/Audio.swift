@@ -46,6 +46,11 @@ final class FrameConverter {
     }
 }
 
+/// A deliberate lifecycle interruption must end capture, not open another mic.
+struct RecordingSuspended: LocalizedError {
+    var errorDescription: String? { "录音已暂停" }
+}
+
 protocol RecordingSource: AnyObject {
     var onLevel: ((Float) -> Void)? { get set }
     var onFailure: ((Error) -> Void)? { get set }
@@ -119,7 +124,7 @@ final class Recorder {
             return stream
         } catch {
             let changesRoute = input.changesPlaybackRoute
-            input.stop { lease?.finish(afterRouteChange: changesRoute) }
+            input.stop { [weak input] in lease?.finish(afterRouteChange: changesRoute || input?.changesPlaybackRoute == true) }
             throw error
         }
     }
@@ -136,7 +141,7 @@ final class Recorder {
         let changesRoute = input.changesPlaybackRoute
         // Keep playback muted through native tail drain and headset shutdown.
         // Recognition finalization remains independent of playback restoration.
-        input.stop { lease?.finish(afterRouteChange: changesRoute) }
+        input.stop { [weak input] in lease?.finish(afterRouteChange: changesRoute || input?.changesPlaybackRoute == true) }
     }
 
     deinit { stop() }

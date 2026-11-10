@@ -198,6 +198,8 @@ final class DictationHeadsetTests: XCTestCase {
         headset.setSuspended(false)
         headset.devicesChanged()
         XCTAssertEqual(inputs.count, 3)
+        inputs[2].send(1)
+        headset.devicesChanged()
         XCTAssertNotNil(headset.tap(for: airPods))
         XCTAssertNil(headset.tap(for: builtIn))
     }
