@@ -18,7 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var screensAsleep = false
     /// The HUD shows a wait hint while the resident headset link is still coming up.
     private var connectingHint = false
-    private let insertText: (String, Bool) -> Void
+    private let insertText: @MainActor (String, Bool) -> Void
     private let defaults: UserDefaults
     private var statusItem: NSStatusItem!
     private var settingsWindow: NSWindow?
@@ -30,7 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
          defaults: UserDefaults = .standard, hotkey: HotkeyMonitor = HotkeyMonitor(),
          replayPool: DictationEnginePool? = nil, failoverPolicy: DictationFailover.Policy? = .automatic,
          headset: HeadsetMicrophone = .shared,
-         insertText: @escaping (String, Bool) -> Void = { TextInserter.insert($0, sendsReturn: $1) }) {
+         insertText: @escaping @MainActor (String, Bool) -> Void = { TextInserter.insert($0, sendsReturn: $1) }) {
         providedCapture = capture
         recorder = Recorder(defaults: defaults)
         self.hotkey = hotkey
