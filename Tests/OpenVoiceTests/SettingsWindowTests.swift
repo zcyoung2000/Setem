@@ -365,7 +365,10 @@ final class SettingsWindowTests: XCTestCase {
         _ = style.sendAction(style.action, to: style.target)
         try await settle(window)
         XCTAssertEqual(defaults.string(forKey: "hudStyle"), HUDStyle.standard.rawValue)
-        XCTAssertEqual(window.frame.height - initialHeight, CGFloat(SettingsTab.audio.contentHeight() - SettingsTab.channel.contentHeight()), accuracy: 1)
+        let availableHeight = max(240, (NSScreen.main?.visibleFrame.height ?? 900) - 140)
+        let expectedAudioHeight = min(SettingsTab.audio.contentHeight(), availableHeight)
+        let expectedChannelHeight = min(SettingsTab.channel.contentHeight(), availableHeight)
+        XCTAssertEqual(window.frame.height - initialHeight, expectedAudioHeight - expectedChannelHeight, accuracy: 1)
         XCTAssertEqual(window.frame.maxY, top, accuracy: 1)
 
         try press("识别渠道", in: window)
