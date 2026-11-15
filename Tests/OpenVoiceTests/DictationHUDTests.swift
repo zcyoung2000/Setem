@@ -59,7 +59,8 @@ final class DictationHUDTests: XCTestCase {
 
     private func render(_ hud: HUD, save: String? = nil) async throws -> RenderedHUD {
         // Allow SwiftUI's display transaction to publish native text and its new height.
-        try await Task.sleep(for: .milliseconds(40))
+        try await parityEventually { self.hud.windowForDiagnostics.frame.width < fullFrame.width }
+        try await Task.sleep(for: .milliseconds(20))
         let window = hud.windowForDiagnostics
         window.appearance = NSAppearance(named: .aqua)
         let view = try XCTUnwrap(window.contentView)
