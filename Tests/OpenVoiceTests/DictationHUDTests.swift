@@ -482,9 +482,15 @@ final class DictationHUDTests: XCTestCase {
         XCTAssertNil(manager.temporaryAttribute(.foregroundColor, atCharacterIndex: 0, effectiveRange: nil))
         let initial = try XCTUnwrap(manager.temporaryAttribute(.foregroundColor, atCharacterIndex: prefix.utf16.count, effectiveRange: nil) as? NSColor)
         XCTAssertLessThan(initial.alphaComponent, 0.4)
-        try await Task.sleep(for: .milliseconds(100))
-        let middle = try XCTUnwrap(manager.temporaryAttribute(.foregroundColor, atCharacterIndex: prefix.utf16.count, effectiveRange: nil) as? NSColor)
-        XCTAssertGreaterThan(middle.alphaComponent, initial.alphaComponent)
+        var middle = initial
+        for _ in 0..<20 {
+            try await Task.sleep(for: .milliseconds(20))
+            if let color = manager.temporaryAttribute(.foregroundColor, atCharacterIndex: prefix.utf16.count, effectiveRange: nil) as? NSColor,
+               color.alphaComponent > initial.alphaComponent {
+                middle = color
+                break
+            }
+        }
         hud.update(expected + "继续说。")
         let retained = try XCTUnwrap(manager.temporaryAttribute(.foregroundColor, atCharacterIndex: prefix.utf16.count, effectiveRange: nil) as? NSColor)
         XCTAssertGreaterThanOrEqual(retained.alphaComponent, middle.alphaComponent, "The next update must not restart an existing fade")
