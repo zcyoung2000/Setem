@@ -22,15 +22,18 @@ struct SettingsView: View {
     @State private var axTrusted = AXIsProcessTrusted()
     @State private var micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
     @StateObject private var compare = ChannelCompare()
+    @StateObject private var launchAtLogin: LaunchAtLogin
     @State private var showCompare = false
     @State private var confirmOfflineDownload = false
     @State private var channelBeforeOffline: String?
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     init(navigation: SettingsNavigation, defaults: UserDefaults = .standard,
+         launchAtLogin: LaunchAtLogin? = nil,
          onResize: @escaping (CGFloat) -> Void = { _ in }) {
         self.navigation = navigation
         self.defaults = defaults
+        _launchAtLogin = StateObject(wrappedValue: launchAtLogin ?? LaunchAtLogin())
         self.onResize = onResize
     }
 
@@ -56,7 +59,7 @@ struct SettingsView: View {
         }
         .focusEffectDisabled()
         .frame(width: 700, height: contentHeight)
-        .onAppear { onResize(contentHeight) }
+        .onAppear { onResize(contentHeight); launchAtLogin.refresh() }
         .onChange(of: contentHeight) { _, height in onResize(height) }
         .onChange(of: hotkey) { _, _ in avoidSendHotkeyConflict() }
         .onChange(of: tapShortcut) { _, _ in avoidSendHotkeyConflict() }
@@ -66,6 +69,7 @@ struct SettingsView: View {
             confirmOfflineDownload = true
         }
         .onReceive(timer) { _ in
+            launchAtLogin.refresh()
             axTrusted = AXIsProcessTrusted()
             micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
             if navigation.tab == .audio { computerMicrophones = Self.computerInputs() }
@@ -162,6 +166,25 @@ struct SettingsView: View {
 
     private var audioPane: some View {
         Form {
+            Section {
+                Toggle("开机自启", isOn: Binding(get: { launchAtLogin.isOn }, set: { launchAtLogin.setEnabled($0) }))
+                    .toggleStyle(.switch)
+                if launchAtLogin.requiresApproval {
+                    LabeledContent("需要在系统设置中允许") {
+                        Button("打开登录项设置") { launchAtLogin.showSystemSettings() }
+                    }
+                }
+                if let message = launchAtLogin.errorMessage {
+                    Text(message).font(.caption).foregroundStyle(.red)
+                        .accessibilityLabel(message)
+                }
+            } header: {
+                Text("启动")
+            } footer: {
+                Text("登录 Mac 后自动启动，在菜单栏待命。")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             Section {
                 LabeledContent("浮窗大小") {
                     Picker("浮窗大小", selection: $hudStyle) {

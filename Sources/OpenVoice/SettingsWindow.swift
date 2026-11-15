@@ -10,7 +10,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .channel: doubao ? 430 : 330
         case .hotkey: 280
-        case .audio: 440
+        case .audio: 600
         case .permission: 250
         }
     }
@@ -25,7 +25,7 @@ final class SettingsNavigation: ObservableObject {
 final class SettingsWindow: NSWindow {
     let navigation = SettingsNavigation()
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, launchAtLogin: LaunchAtLogin? = nil) {
         MicrophonePreference.migrate(in: defaults)
         Channel.migrateLegacySelection(in: defaults)
         Hotkey.removeRetiredSettings(in: defaults)
@@ -36,7 +36,7 @@ final class SettingsWindow: NSWindow {
                    backing: .buffered, defer: false)
         title = "OpenVoice 设置"
         isReleasedWhenClosed = false
-        let settings = SettingsView(navigation: navigation, defaults: defaults) { [weak self] height in
+        let settings = SettingsView(navigation: navigation, defaults: defaults, launchAtLogin: launchAtLogin) { [weak self] height in
             self?.resizeContent(to: height)
         }
         contentView = NSHostingView(rootView: AnyView(settings.defaultAppStorage(defaults)))

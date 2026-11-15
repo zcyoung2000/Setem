@@ -1,10 +1,78 @@
 import AppKit
+import ServiceManagement
 import SwiftUI
 import XCTest
 @testable import OpenVoice
 
 @MainActor
 final class SettingsWindowTests: XCTestCase {
+    func testLoginItemSwitchUsesSystemStateAndCanBeDisabledAfterReopening() async throws {
+        _ = NSApplication.shared
+        var status = SMAppService.Status.notRegistered
+        let model = LaunchAtLogin(readStatus: { status }, register: { status = .enabled },
+                                  unregister: { status = .notRegistered })
+        let window = SettingsWindow(launchAtLogin: model)
+        window.navigation.tab = .audio
+        window.makeKeyAndOrderFront(nil)
+        try await settle(window)
+        try press("开机自启", in: window)
+        try await settle(window)
+        XCTAssertEqual(status, .enabled)
+        window.close()
+        let reopened = SettingsWindow(launchAtLogin: model)
+        defer { reopened.close() }
+        reopened.navigation.tab = .audio
+        reopened.makeKeyAndOrderFront(nil)
+        try await settle(reopened)
+        try press("开机自启", in: reopened)
+        try await settle(reopened)
+        XCTAssertEqual(status, .notRegistered)
+    }
+
+    func testLoginItemApprovalAndExternalSystemChanges() async throws {
+        var status = SMAppService.Status.notRegistered
+        var openedSettings = false
+        let model = LaunchAtLogin(readStatus: { status }, register: { status = .requiresApproval },
+                                  unregister: { status = .notRegistered }, openSettings: { openedSettings = true })
+        model.setEnabled(true)
+        XCTAssertTrue(model.isOn)
+        XCTAssertTrue(model.requiresApproval)
+        _ = NSApplication.shared
+        let window = SettingsWindow(launchAtLogin: model)
+        defer { window.close() }
+        window.navigation.tab = .audio
+        window.makeKeyAndOrderFront(nil)
+        try await settle(window)
+        try press("打开登录项设置", in: window)
+        XCTAssertTrue(openedSettings)
+        status = .enabled
+        model.refresh()
+        XCTAssertTrue(model.isOn)
+        XCTAssertFalse(model.requiresApproval)
+        status = .notRegistered
+        model.refresh()
+        XCTAssertFalse(model.isOn)
+    }
+
+    func testLoginItemFailureKeepsActualStateAndAllowsRetry() async throws {
+        var status = SMAppService.Status.notRegistered
+        var shouldFail = true
+        let model = LaunchAtLogin(readStatus: { status }, register: {
+            if shouldFail { throw NSError(domain: "LoginItemTest", code: 1) }
+            status = .enabled
+        }, unregister: { throw NSError(domain: "LoginItemTest", code: 2) })
+        model.setEnabled(true)
+        XCTAssertFalse(model.isOn)
+        XCTAssertNotNil(model.errorMessage)
+        shouldFail = false
+        model.setEnabled(true)
+        XCTAssertTrue(model.isOn)
+        XCTAssertNil(model.errorMessage)
+        model.setEnabled(false)
+        XCTAssertTrue(model.isOn)
+        XCTAssertNotNil(model.errorMessage)
+    }
+
     func testPlaybackMuteSwitchPersistsAndCanBeDisabledAfterReopening() async throws {
         _ = NSApplication.shared
         let suite = "OpenVoice-EchoSettings-" + UUID().uuidString
