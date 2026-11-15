@@ -163,7 +163,7 @@ final class DictationHUDTests: XCTestCase {
         let fullFrame = hud.windowForDiagnostics.frame
         hud.hide()
         XCTAssertTrue(hud.isVisible)
-        try await Task.sleep(for: .milliseconds(80))
+        try await Task.sleep(for: .milliseconds(40))
         XCTAssertEqual(hud.windowForDiagnostics.alphaValue, 1)
         XCTAssertLessThan(hud.windowForDiagnostics.frame.width, fullFrame.width)
         XCTAssertGreaterThan(hud.windowForDiagnostics.frame.width, 8)
