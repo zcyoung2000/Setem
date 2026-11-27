@@ -17,7 +17,7 @@ PLATFORM_LINK_FLAGS=(
 # SwiftPM still links against the selected SDK without these local-only flags.
 [[ -z "${CI:-}" ]] || PLATFORM_LINK_FLAGS=()
 LINKER_FLAGS=(
-    "${PLATFORM_LINK_FLAGS[@]}"
+    ${PLATFORM_LINK_FLAGS[@]+"${PLATFORM_LINK_FLAGS[@]}"}
     -Xlinker -rpath -Xlinker '@executable_path/../Frameworks'
 )
 
