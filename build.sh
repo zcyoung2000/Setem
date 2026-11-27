@@ -16,12 +16,16 @@ PLATFORM_LINK_FLAGS=(
 # GitHub's Xcode 26 linker rejects -platform_version when SwiftPM invokes it.
 # SwiftPM still links against the selected SDK without these local-only flags.
 [[ -z "${CI:-}" ]] || PLATFORM_LINK_FLAGS=()
+LINKER_FLAGS=(
+    "${PLATFORM_LINK_FLAGS[@]}"
+    -Xlinker -rpath -Xlinker '@executable_path/../Frameworks'
+)
 
 # 通用包：Apple 芯片与 Intel 共用一个 App
 xcrun swift build -c release --arch arm64 --arch x86_64 \
-    ${PLATFORM_LINK_FLAGS[@]+"${PLATFORM_LINK_FLAGS[@]}"}
+    "${LINKER_FLAGS[@]}"
 BIN="$(xcrun swift build -c release --arch arm64 --arch x86_64 \
-    ${PLATFORM_LINK_FLAGS[@]+"${PLATFORM_LINK_FLAGS[@]}"} --show-bin-path)/OpenVoice"
+    "${LINKER_FLAGS[@]}" --show-bin-path)/OpenVoice"
 
 # 图标由 Scripts/icon.swift 生成，脚本未改动则复用
 ICNS=build/AppIcon.icns
@@ -39,11 +43,16 @@ fi
 
 APP=build/Setem.app
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 cp "$BIN" "$APP/Contents/MacOS/Setem"
 cp "$ICNS" "$APP/Contents/Resources/"
+SPARKLE_FRAMEWORK=$(find .build -type d -path '*/Sparkle.framework' -print -quit)
+[[ -n "$SPARKLE_FRAMEWORK" ]] || { echo "Sparkle.framework was not built" >&2; exit 1; }
+cp -R "$SPARKLE_FRAMEWORK" "$APP/Contents/Frameworks/"
 VERSION="${VERSION:-0.1}"
 BUILD="${BUILD:-1}"
+UPDATE_REPOSITORY="${UPDATE_REPOSITORY:-${GITHUB_REPOSITORY:-zcyoung2000/Setem}}"
+UPDATE_FEED_URL="${UPDATE_FEED_URL:-https://github.com/$UPDATE_REPOSITORY/releases/latest/download/appcast.xml}"
 cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -59,21 +68,25 @@ cat > "$APP/Contents/Info.plist" <<EOF
     <key>LSMinimumSystemVersion</key><string>15.0</string>
     <key>LSUIElement</key><true/>
     <key>NSMicrophoneUsageDescription</key><string>语音输入需要录制麦克风声音，并发送到可用识别渠道转写。</string>
+    <key>SUFeedURL</key><string>$UPDATE_FEED_URL</string>
+    <key>SUEnableAutomaticChecks</key><true/>
+    <key>SUScheduledCheckInterval</key><integer>86400</integer>
+    <key>SUPublicEDKey</key><string>lsNLu0Vdc3qPyY+al0KaB0/aJQJHxMnv5mICibYIZas=</string>
 </dict>
 </plist>
 EOF
 SIGN_LOG=$(mktemp)
 if IDENTITY=$(./Scripts/ensure-signing-cert.sh 2>"$SIGN_LOG"); then
-    if ! codesign --force --sign "$IDENTITY" "$APP" 2>>"$SIGN_LOG"; then
+    if ! codesign --force --deep --sign "$IDENTITY" "$APP" 2>>"$SIGN_LOG"; then
         cat "$SIGN_LOG" >&2
         echo "固定证书签名失败，回退 ad-hoc 签名" >&2
-        codesign --force --sign - "$APP"
+        codesign --force --deep --sign - "$APP"
         IDENTITY=""
     fi
 else
     cat "$SIGN_LOG" >&2
     echo "固定证书不可用，回退 ad-hoc 签名" >&2
-    codesign --force --sign - "$APP"
+    codesign --force --deep --sign - "$APP"
     IDENTITY=""
 fi
 rm -f "$SIGN_LOG"

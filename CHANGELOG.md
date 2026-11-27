@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## v0.9.9 – 2026-11-27
+
+### Added
+
+- 使用 Sparkle 从 GitHub Releases 每日检查并安装更新；菜单栏可手动检查，下载包通过 Ed25519 签名校验。
 
 ### Fixed
 

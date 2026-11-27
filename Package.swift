@@ -4,6 +4,10 @@ import PackageDescription
 let package = Package(
     name: "OpenVoice",
     platforms: [.macOS(.v15)],
+    dependencies: [
+        // Sparkle provides signed, user-confirmed updates from GitHub Releases.
+        .package(url: "https://github.com/sparkle-project/Sparkle.git", exact: "2.9.6"),
+    ],
     targets: [
         .target(
             name: "COpus",
@@ -11,7 +15,11 @@ let package = Package(
         ),
         // 离线识别：在本进程内加载安卓 ELF so（仅 arm64 生效，x86_64 编译为空桩）
         .target(name: "CHanbao", cSettings: [.unsafeFlags(["-O2", "-Wno-unused-function"])]),
-        .executableTarget(name: "OpenVoice", dependencies: ["COpus", "CHanbao"]),
+        .executableTarget(name: "OpenVoice", dependencies: [
+            "COpus",
+            "CHanbao",
+            .product(name: "Sparkle", package: "Sparkle"),
+        ]),
         .testTarget(name: "OpenVoiceTests", dependencies: ["OpenVoice"]),
     ],
     swiftLanguageModes: [.v5]

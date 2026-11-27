@@ -87,6 +87,12 @@ xattr -dr com.apple.quarantine /Applications/Setem.app
 git tag v0.2.0 && git push origin v0.2.0
 ```
 
+应用启动后会每天在后台检查 GitHub Releases，也可以从菜单栏的「检查更新…」手动检查。
+有新版本时由 Sparkle 下载并校验 DMG，确认后自动安装并重启应用。Release workflow 需要仓库
+管理员先在 GitHub Actions secrets 中添加 `SPARKLE_ED_PRIVATE_KEY`；用 Sparkle 2.9.6
+发行包中的 `bin/generate_keys -x private.key` 导出私钥，公钥已经写入应用包的 Info.plist，
+私钥不要提交到仓库。
+
 ## 实现
 
 | 文件 | 内容 |

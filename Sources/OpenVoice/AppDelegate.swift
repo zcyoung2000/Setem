@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var connectingHint = false
     private let insertText: @MainActor (String, Bool) -> Void
     private let defaults: UserDefaults
+    private let updateManager = UpdateManager()
     private var statusItem: NSStatusItem!
     private var settingsWindow: NSWindow?
     private var recording = false
@@ -97,6 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         hotkey.start()
+        updateManager.start()
         observeHeadsetMode()
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             self?.handleSettingsShortcut(event) == true ? nil : event
@@ -333,6 +335,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             ax.target = self
             menu.addItem(ax)
         }
+        let updates = NSMenuItem(title: "检查更新…", action: #selector(checkForUpdates), keyEquivalent: "")
+        updates.target = self
+        updates.isEnabled = updateManager.canCheckForUpdates
+        menu.addItem(updates)
         let settings = NSMenuItem(title: "设置", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
@@ -368,6 +374,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
         settingsWindow?.orderFrontRegardless()
+    }
+
+    @objc private func checkForUpdates() {
+        updateManager.checkForUpdates()
     }
 
     /// 菜单栏 App 没有「文件 → 关闭」，⌘W 不会自动关窗口
